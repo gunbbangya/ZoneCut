@@ -30,23 +30,37 @@ const SIDE_LABELS: Record<FaceSide, string> = {
   right: "Right Side",
 };
 
-const FEATURE_LANDMARK_INDICES: readonly number[] = [
-  // Face silhouette (oval)
-  10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379,
-  378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127,
-  162, 21, 54, 103, 67, 109,
-  // Left eye
+// 15~20개 정도만 듬성듬성: 얼굴 외곽 형태(실루엣) 확인용
+// (대략 "이마 → 관자/귀 → 턱 → 반대쪽 귀/관자 → 이마" 순서)
+const SILHOUETTE_LANDMARK_INDICES: readonly number[] = [
+  10, 338, 297, 284, 454, 361, 288, 152, 58, 132, 93, 234, 127, 162, 21, 54,
+  67, 109,
+] as const;
+
+const LEFT_EYE_INDICES: readonly number[] = [
   33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161,
   246,
-  // Right eye
+] as const;
+
+const RIGHT_EYE_INDICES: readonly number[] = [
   362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384,
   398,
-  // Left eyebrow
+] as const;
+
+const LEFT_EYEBROW_INDICES: readonly number[] = [
   70, 63, 105, 66, 107, 55, 65, 52, 53, 46,
-  // Right eyebrow
+] as const;
+
+const RIGHT_EYEBROW_INDICES: readonly number[] = [
   336, 296, 334, 293, 300, 285, 295, 282, 283, 276,
-  // Ear-ish / temples (quick visual sanity points)
-  127, 356, 234, 454,
+] as const;
+
+const FEATURE_LANDMARK_INDICES: readonly number[] = [
+  ...SILHOUETTE_LANDMARK_INDICES,
+  ...LEFT_EYE_INDICES,
+  ...RIGHT_EYE_INDICES,
+  ...LEFT_EYEBROW_INDICES,
+  ...RIGHT_EYEBROW_INDICES,
 ] as const;
 
 const FEATURE_LANDMARK_SET = new Set<number>(FEATURE_LANDMARK_INDICES);
@@ -213,18 +227,48 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       const sx = rect.width / img.naturalWidth;
       const sy = rect.height / img.naturalHeight;
 
-      ctx.fillStyle = "#32CD32"; // LimeGreen
+      const toCanvas = (p: FacePixelPoint) => {
+        const xCss = p.x * sx;
+        const yCss = p.y * sy;
+        return { x: xCss * dpr, y: yCss * dpr };
+      };
+
+      // 1) 실루엣을 "마스크"처럼 선으로 연결
+      if (SILHOUETTE_LANDMARK_INDICES.length >= 2) {
+        ctx.beginPath();
+        const firstIdx = SILHOUETTE_LANDMARK_INDICES[0];
+        const first = points[firstIdx];
+        if (first) {
+          const p0 = toCanvas(first);
+          ctx.moveTo(p0.x, p0.y);
+          for (let i = 1; i < SILHOUETTE_LANDMARK_INDICES.length; i += 1) {
+            const idx = SILHOUETTE_LANDMARK_INDICES[i];
+            const pt = points[idx];
+            if (!pt) continue;
+            const p = toCanvas(pt);
+            ctx.lineTo(p.x, p.y);
+          }
+          ctx.closePath();
+          ctx.strokeStyle = "rgba(50, 205, 50, 0.5)";
+          ctx.lineWidth = 1.5 * dpr;
+          ctx.stroke();
+        }
+      }
+
+      // 2) 포인트를 UI 핸들처럼 큼직하게 표시
+      const radius = 4 * dpr;
+      ctx.fillStyle = "#FFFFFF";
+      ctx.strokeStyle = "#32CD32";
+      ctx.lineWidth = 2 * dpr;
 
       for (let i = 0; i < points.length; i += 1) {
         if (!FEATURE_LANDMARK_SET.has(i)) continue;
         const p = points[i];
-        const xCss = p.x * sx;
-        const yCss = p.y * sy;
-        const x = xCss * dpr;
-        const y = yCss * dpr;
+        const { x, y } = toCanvas(p);
         ctx.beginPath();
-        ctx.arc(x, y, 5 * dpr, 0, Math.PI * 2);
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.fill();
+        ctx.stroke();
       }
     },
     [landmarksBySide],
