@@ -223,7 +223,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         const x = xCss * dpr;
         const y = yCss * dpr;
         ctx.beginPath();
-        ctx.arc(x, y, 2 * dpr, 0, Math.PI * 2);
+        ctx.arc(x, y, 5 * dpr, 0, Math.PI * 2);
         ctx.fill();
       }
     },
