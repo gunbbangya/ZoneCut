@@ -7,6 +7,8 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type MouseEvent as ReactMouseEvent,
+  type TouchEvent as ReactTouchEvent,
 } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
@@ -38,20 +40,36 @@ const FRONT_BACK_OVAL_INDICES: readonly number[] = [
   378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132,
 ] as const;
 
-const ANALYSIS_ERROR_MSG =
-  "⚠️ Could not detect face. Please tie your hair back to show your eyebrows and ears clearly.";
-
-const MANUAL_MODE_HINT =
+const MANUAL_MODE_HINT_SIDE =
   "Drag the dots to match your ear top and eyebrow end";
+
+const MANUAL_MODE_HINT_FRONT_BACK =
+  "Drag the dots to set the maximum clipping height";
 
 type StyleChoice = "twoBlockFade" | null;
 
 type ManualBlockLine = { p0: FacePixelPoint; p1: FacePixelPoint };
 
-function defaultManualBlockLine(nw: number, nh: number): ManualBlockLine {
+function isFrontOrBackSide(side: FaceSide): side is "front" | "back" {
+  return side === "front" || side === "back";
+}
+
+/** Default manual line: diagonals for L/R; horizontal max-height line for front/back. */
+function defaultManualBlockLineForSide(
+  side: FaceSide,
+  nw: number,
+  nh: number,
+): ManualBlockLine {
+  if (isFrontOrBackSide(side)) {
+    const y = nh * 0.5;
+    return {
+      p0: { x: nw * 0.1, y },
+      p1: { x: nw * 0.9, y },
+    };
+  }
   return {
-    p0: { x: nw * 0.18, y: nh * 0.5 },
-    p1: { x: nw * 0.82, y: nh * 0.5 },
+    p0: { x: nw * 0.25, y: nh * 0.32 },
+    p1: { x: nw * 0.78, y: nh * 0.58 },
   };
 }
 
@@ -195,7 +213,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     right: null,
   });
   const blockDragRef = useRef<{
-    side: "left" | "right";
+    side: FaceSide;
     which: 0 | 1;
     pointerId: number;
   } | null>(null);
@@ -538,32 +556,45 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         return { x: xCss * dpr, y: yCss * dpr };
       };
 
-      if (side === "left" || side === "right") {
-        if (manual) {
-          const c0 = toCanvas(manual.p0);
-          const c1 = toCanvas(manual.p1);
-          ctx.setLineDash([12 * dpr, 8 * dpr]);
-          ctx.beginPath();
-          ctx.moveTo(c0.x, c0.y);
-          ctx.lineTo(c1.x, c1.y);
-          ctx.strokeStyle = "#FFFF00";
-          ctx.lineWidth = 5 * dpr;
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          ctx.stroke();
-          ctx.setLineDash([]);
-          const r = 8 * dpr;
-          for (const c of [c0, c1]) {
-            ctx.beginPath();
-            ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
-            ctx.fillStyle = "#FFFFFF";
-            ctx.fill();
-            ctx.strokeStyle = "#FFFF00";
-            ctx.lineWidth = 2.5 * dpr;
-            ctx.stroke();
-          }
-          return;
+      if (manual) {
+        const p0N = manual.p0;
+        const p1N = manual.p1;
+        let drawP0: FacePixelPoint;
+        let drawP1: FacePixelPoint;
+        if (isFrontOrBackSide(side)) {
+          const y = (p0N.y + p1N.y) / 2;
+          drawP0 = { x: p0N.x, y };
+          drawP1 = { x: p1N.x, y };
+        } else {
+          drawP0 = p0N;
+          drawP1 = p1N;
         }
+        const c0 = toCanvas(drawP0);
+        const c1 = toCanvas(drawP1);
+        ctx.setLineDash([12 * dpr, 8 * dpr]);
+        ctx.beginPath();
+        ctx.moveTo(c0.x, c0.y);
+        ctx.lineTo(c1.x, c1.y);
+        ctx.strokeStyle = "#FFFF00";
+        ctx.lineWidth = 5 * dpr;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const r = 8 * dpr;
+        for (const c of [c0, c1]) {
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+          ctx.fillStyle = "#FFFFFF";
+          ctx.fill();
+          ctx.strokeStyle = "#FFFF00";
+          ctx.lineWidth = 2.5 * dpr;
+          ctx.stroke();
+        }
+        return;
+      }
+
+      if (side === "left" || side === "right") {
         if (points && points.length > 0) {
           const { temple, earTop } = TWO_BLOCK_LINE[side];
           const a = points[temple];
@@ -647,16 +678,15 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       setIsAnalyzing((prev) => ({ ...prev, [side]: true }));
       setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
 
-      const activateSideManual = () => {
+      const activateManual = () => {
         const nw = img.naturalWidth;
         const nh = img.naturalHeight;
         if (nw < 2 || nh < 2) return;
-        if (side !== "left" && side !== "right") return;
         setErrorMsg((prev) => ({ ...prev, [side]: null }));
         setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
         setManualBlockBySide((prev) => ({
           ...prev,
-          [side]: defaultManualBlockLine(nw, nh),
+          [side]: defaultManualBlockLineForSide(side, nw, nh),
         }));
       };
 
@@ -664,20 +694,14 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         const points = await analyzeFace(img);
 
         if (points.length === 0) {
-          if (side === "left" || side === "right") {
-            activateSideManual();
-          } else {
-            setErrorMsg((prev) => ({ ...prev, [side]: ANALYSIS_ERROR_MSG }));
-            setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
-          }
+          activateManual();
           return;
         }
 
         if (side === "front" || side === "back") {
           const n = countValid(points, FRONT_BACK_OVAL_INDICES);
           if (n < 8) {
-            setErrorMsg((prev) => ({ ...prev, [side]: ANALYSIS_ERROR_MSG }));
-            setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+            activateManual();
             return;
           }
         }
@@ -685,7 +709,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         if (side === "left" || side === "right") {
           const { temple, earTop } = TWO_BLOCK_LINE[side];
           if (!points[temple] || !points[earTop]) {
-            activateSideManual();
+            activateManual();
             return;
           }
         }
@@ -695,12 +719,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         setLandmarksBySide((prev) => ({ ...prev, [side]: points }));
         requestAnimationFrame(() => drawLandmarks(side));
       } catch {
-        if (side === "left" || side === "right") {
-          activateSideManual();
-        } else {
-          setErrorMsg((prev) => ({ ...prev, [side]: ANALYSIS_ERROR_MSG }));
-          setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
-        }
+        activateManual();
       } finally {
         setIsAnalyzing((prev) => ({ ...prev, [side]: false }));
       }
@@ -727,11 +746,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       if (photos[s] === null) return false;
       if (isAnalyzing[s]) return false;
       if (errorMsg[s] !== null) return false;
-      if (s === "left" || s === "right") {
-        if (manualBlockBySide[s] != null) return true;
-        const lm = landmarksBySide[s];
-        return lm != null && lm.length > 0;
-      }
+      if (manualBlockBySide[s] != null) return true;
       const lm = landmarksBySide[s];
       return lm != null && lm.length > 0;
     },
@@ -760,7 +775,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
   );
 
   const onBlockPointerDown = useCallback(
-    (side: "left" | "right", e: ReactPointerEvent<HTMLCanvasElement>) => {
+    (side: FaceSide, e: ReactPointerEvent<HTMLCanvasElement>) => {
       const manual = manualBlockBySide[side];
       if (!manual) return;
       const img = imgRefs.current[side];
@@ -771,9 +786,12 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         const { p0, p1 } = manual;
         const sx = r.width / img.naturalWidth;
         const sy = r.height / img.naturalHeight;
+        const y = isFrontOrBackSide(side) ? (p0.y + p1.y) / 2 : p0.y;
+        const p0y = isFrontOrBackSide(side) ? y : p0.y;
+        const p1y = isFrontOrBackSide(side) ? y : p1.y;
         return {
-          c0: { x: r.left + p0.x * sx, y: r.top + p0.y * sy },
-          c1: { x: r.left + p1.x * sx, y: r.top + p1.y * sy },
+          c0: { x: r.left + p0.x * sx, y: r.top + p0y * sy },
+          c1: { x: r.left + p1.x * sx, y: r.top + p1y * sy },
         };
       })();
       const d0 =
@@ -799,6 +817,19 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         setManualBlockBySide((prev) => {
           const m = prev[side];
           if (!m) return prev;
+          if (isFrontOrBackSide(side)) {
+            const y = np.y;
+            if (dragTarget === 0) {
+              return {
+                ...prev,
+                [side]: { p0: { x: np.x, y }, p1: { x: m.p1.x, y } },
+              };
+            }
+            return {
+              ...prev,
+              [side]: { p0: { x: m.p0.x, y }, p1: { x: np.x, y } },
+            };
+          }
           if (dragTarget === 0) {
             return { ...prev, [side]: { ...m, p0: np } };
           }
@@ -821,6 +852,167 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       document.addEventListener("pointermove", onMove);
       document.addEventListener("pointerup", onUp);
       document.addEventListener("pointercancel", onUp);
+    },
+    [clientToNatural, drawLandmarks, manualBlockBySide],
+  );
+
+  const onBlockMouseDown = useCallback(
+    (side: FaceSide, e: ReactMouseEvent<HTMLCanvasElement>) => {
+      if (typeof window !== "undefined" && "PointerEvent" in window) return;
+      if (e.button !== 0) return;
+      const manual = manualBlockBySide[side];
+      if (!manual) return;
+      const img = imgRefs.current[side];
+      if (!img) return;
+      e.preventDefault();
+      const c0c = (() => {
+        const r = img.getBoundingClientRect();
+        const { p0, p1 } = manual;
+        const sx = r.width / img.naturalWidth;
+        const sy = r.height / img.naturalHeight;
+        const y = isFrontOrBackSide(side) ? (p0.y + p1.y) / 2 : p0.y;
+        const p0y = isFrontOrBackSide(side) ? y : p0.y;
+        const p1y = isFrontOrBackSide(side) ? y : p1.y;
+        return {
+          c0: { x: r.left + p0.x * sx, y: r.top + p0y * sy },
+          c1: { x: r.left + p1.x * sx, y: r.top + p1y * sy },
+        };
+      })();
+      const d0 =
+        (e.clientX - c0c.c0.x) * (e.clientX - c0c.c0.x) +
+        (e.clientY - c0c.c0.y) * (e.clientY - c0c.c0.y);
+      const d1 =
+        (e.clientX - c0c.c1.x) * (e.clientX - c0c.c1.x) +
+        (e.clientY - c0c.c1.y) * (e.clientY - c0c.c1.y);
+      const hitR = 14;
+      const hit2 = hitR * hitR;
+      const h0 = d0 <= hit2;
+      const h1 = d1 <= hit2;
+      if (!h0 && !h1) return;
+      const dragTarget: 0 | 1 =
+        h0 && h1 ? (d0 < d1 ? 0 : 1) : h0 ? 0 : 1;
+      blockDragRef.current = { side, which: dragTarget, pointerId: -1 };
+      const onMove = (ev: MouseEvent) => {
+        const img2 = imgRefs.current[side];
+        if (!img2) return;
+        if ((ev.buttons & 1) === 0) {
+          onUp();
+          return;
+        }
+        const np = clientToNatural(img2, ev.clientX, ev.clientY);
+        setManualBlockBySide((prev) => {
+          const m = prev[side];
+          if (!m) return prev;
+          if (isFrontOrBackSide(side)) {
+            const y = np.y;
+            if (dragTarget === 0) {
+              return {
+                ...prev,
+                [side]: { p0: { x: np.x, y }, p1: { x: m.p1.x, y } },
+              };
+            }
+            return {
+              ...prev,
+              [side]: { p0: { x: m.p0.x, y }, p1: { x: np.x, y } },
+            };
+          }
+          if (dragTarget === 0) {
+            return { ...prev, [side]: { ...m, p0: np } };
+          }
+          return { ...prev, [side]: { ...m, p1: np } };
+        });
+        requestAnimationFrame(() => drawLandmarks(side));
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        blockDragRef.current = null;
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [clientToNatural, drawLandmarks, manualBlockBySide],
+  );
+
+  const onBlockTouchStart = useCallback(
+    (side: FaceSide, e: ReactTouchEvent<HTMLCanvasElement>) => {
+      if (typeof window !== "undefined" && "PointerEvent" in window) {
+        e.preventDefault();
+        return;
+      }
+      if (e.touches.length !== 1) return;
+      const manual = manualBlockBySide[side];
+      if (!manual) return;
+      const img = imgRefs.current[side];
+      if (!img) return;
+      e.preventDefault();
+      const t = e.touches[0];
+      const c0c = (() => {
+        const r = img.getBoundingClientRect();
+        const { p0, p1 } = manual;
+        const sx = r.width / img.naturalWidth;
+        const sy = r.height / img.naturalHeight;
+        const y = isFrontOrBackSide(side) ? (p0.y + p1.y) / 2 : p0.y;
+        const p0y = isFrontOrBackSide(side) ? y : p0.y;
+        const p1y = isFrontOrBackSide(side) ? y : p1.y;
+        return {
+          c0: { x: r.left + p0.x * sx, y: r.top + p0y * sy },
+          c1: { x: r.left + p1.x * sx, y: r.top + p1y * sy },
+        };
+      })();
+      const d0 =
+        (t.clientX - c0c.c0.x) * (t.clientX - c0c.c0.x) +
+        (t.clientY - c0c.c0.y) * (t.clientY - c0c.c0.y);
+      const d1 =
+        (t.clientX - c0c.c1.x) * (t.clientX - c0c.c1.x) +
+        (t.clientY - c0c.c1.y) * (t.clientY - c0c.c1.y);
+      const hitR = 14;
+      const hit2 = hitR * hitR;
+      const h0 = d0 <= hit2;
+      const h1 = d1 <= hit2;
+      if (!h0 && !h1) return;
+      const dragTarget: 0 | 1 =
+        h0 && h1 ? (d0 < d1 ? 0 : 1) : h0 ? 0 : 1;
+      blockDragRef.current = { side, which: dragTarget, pointerId: -2 };
+      const onMove = (ev: TouchEvent) => {
+        if (ev.touches.length !== 1) return;
+        const img2 = imgRefs.current[side];
+        if (!img2) return;
+        const t2 = ev.touches[0];
+        const np = clientToNatural(img2, t2.clientX, t2.clientY);
+        setManualBlockBySide((prev) => {
+          const m = prev[side];
+          if (!m) return prev;
+          if (isFrontOrBackSide(side)) {
+            const y = np.y;
+            if (dragTarget === 0) {
+              return {
+                ...prev,
+                [side]: { p0: { x: np.x, y }, p1: { x: m.p1.x, y } },
+              };
+            }
+            return {
+              ...prev,
+              [side]: { p0: { x: m.p0.x, y }, p1: { x: np.x, y } },
+            };
+          }
+          if (dragTarget === 0) {
+            return { ...prev, [side]: { ...m, p0: np } };
+          }
+          return { ...prev, [side]: { ...m, p1: np } };
+        });
+        requestAnimationFrame(() => drawLandmarks(side));
+        ev.preventDefault();
+      };
+      const onUp = () => {
+        document.removeEventListener("touchmove", onMove);
+        document.removeEventListener("touchend", onUp);
+        document.removeEventListener("touchcancel", onUp);
+        blockDragRef.current = null;
+      };
+      document.addEventListener("touchmove", onMove, { passive: false });
+      document.addEventListener("touchend", onUp);
+      document.addEventListener("touchcancel", onUp);
     },
     [clientToNatural, drawLandmarks, manualBlockBySide],
   );
@@ -872,8 +1064,10 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
               const label = SIDE_LABELS[side];
               const err = errorMsg[side];
               const loading = isAnalyzing[side];
-              const isManualBlock =
-                (side === "left" || side === "right") && manualBlockBySide[side] != null;
+              const isManualBlock = manualBlockBySide[side] != null;
+              const manualHint = isFrontOrBackSide(side)
+                ? MANUAL_MODE_HINT_FRONT_BACK
+                : MANUAL_MODE_HINT_SIDE;
 
               return (
                 <div key={side} className="relative aspect-square min-h-0">
@@ -909,12 +1103,18 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                         }
                         aria-hidden
                         onPointerDown={
-                          (side === "left" || side === "right") && isManualBlock
-                            ? (e) => {
-                                if (side === "left" || side === "right") {
-                                  onBlockPointerDown(side, e);
-                                }
-                              }
+                          isManualBlock
+                            ? (e) => onBlockPointerDown(side, e)
+                            : undefined
+                        }
+                        onMouseDown={
+                          isManualBlock
+                            ? (e) => onBlockMouseDown(side, e)
+                            : undefined
+                        }
+                        onTouchStart={
+                          isManualBlock
+                            ? (e) => onBlockTouchStart(side, e)
                             : undefined
                         }
                       />
@@ -932,7 +1132,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                       {!loading && isManualBlock ? (
                         <div className="pointer-events-none absolute inset-x-0 bottom-14 z-[14] flex justify-center px-2">
                           <p className="max-w-[18rem] rounded-lg bg-black/60 px-3 py-2 text-center text-xs font-medium leading-snug text-white ring-1 ring-white/10">
-                            {MANUAL_MODE_HINT}
+                            {manualHint}
                           </p>
                         </div>
                       ) : null}
