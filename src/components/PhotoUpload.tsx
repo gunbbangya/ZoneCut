@@ -56,12 +56,8 @@ function countValid(
   return n;
 }
 
-function guideHeadlineForSide(side: FaceSide): string {
-  if (side === "left" || side === "right") {
-    return "귀와 눈썹이 잘 보이게 측면을 맞춰주세요";
-  }
-  return "얼굴을 이 선에 맞춰주세요";
-}
+/** 인앱 카메라 오버레이 — 모든 슬롯 공통 (원거리 + 얼굴/눈 맞춤) */
+const CAMERA_OVERLAY_HEADLINE = "팔을 쭉 뻗어 눈과 얼굴 윤곽을 맞춰주세요";
 
 function PlusIcon({ className }: { className?: string }) {
   return (
@@ -256,7 +252,12 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     canvas.height = h;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    // 화면(거울)과 동일: 비디오 버퍼는 미러가 아니므로 X축 뒤집기
+    ctx.save();
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
     ctx.drawImage(video, 0, 0, w, h);
+    ctx.restore();
     const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
 
     commitPhotos((prev) => ({ ...prev, [side]: dataUrl }));
@@ -626,7 +627,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
           <div className="relative min-h-0 flex-1">
             <video
               ref={videoRef}
-              className="h-full w-full object-cover"
+              className="h-full w-full object-cover [transform:scaleX(-1)]"
               autoPlay
               playsInline
               muted
@@ -640,15 +641,24 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
               aria-hidden
             >
               <div className="flex w-full max-w-sm flex-col items-center">
-                <p className="mb-4 text-center text-base font-semibold text-white drop-shadow [text-shadow:0_1px_4px_rgba(0,0,0,0.8)] sm:text-lg">
-                  {guideHeadlineForSide(cameraSide)}
+                <p className="mb-3 text-center text-sm font-semibold leading-snug text-white [text-shadow:0_1px_4px_rgba(0,0,0,0.8)] sm:mb-4 sm:max-w-md sm:text-base">
+                  {CAMERA_OVERLAY_HEADLINE}
                 </p>
+                {/* 약 40~45% 뷰포트 높이 + 여권식 얼굴/눈 맞춤: 큰 타원 + 상단 눈형 원 2개 */}
                 <div
-                  className="h-[min(50vh,400px)] w-[min(85vw,360px)] rounded-[100%] border-[3px] border-dashed border-white/90 bg-transparent"
-                  style={{
-                    boxShadow: "0 0 0 100vmax rgba(0,0,0,0.45)",
-                  }}
-                />
+                  className="relative h-[min(42.5dvh,45dvh,400px)] w-[min(30dvh,78vw,280px)] max-h-[45vh] shrink-0"
+                >
+                  <div
+                    className="absolute inset-0 rounded-[100%] border-2 border-dashed border-white/90"
+                    style={{
+                      boxShadow: "0 0 0 100vmax rgba(0,0,0,0.45)",
+                    }}
+                  />
+                  <div className="absolute inset-x-0 top-[24%] flex items-start justify-center gap-[clamp(1.5rem,12vw,3.25rem)] sm:top-[27%]">
+                    <div className="h-[clamp(1.6rem,5.5vw,2.4rem)] w-[clamp(1.6rem,5.5vw,2.4rem)] shrink-0 rounded-full border border-dashed border-white/75" />
+                    <div className="h-[clamp(1.6rem,5.5vw,2.4rem)] w-[clamp(1.6rem,5.5vw,2.4rem)] shrink-0 rounded-full border border-dashed border-white/75" />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
