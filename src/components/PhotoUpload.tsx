@@ -6,6 +6,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ChangeEvent,
 } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
@@ -128,6 +129,24 @@ function initialErrorRecord(): Record<FaceSide, string | null> {
   return { front: null, back: null, left: null, right: null };
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === "string") {
+        resolve(result);
+        return;
+      }
+      reject(new Error("Could not read file."));
+    };
+    reader.onerror = () => {
+      reject(reader.error ?? new Error("File read failed."));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
   const [styleChoice, setStyleChoice] = useState<StyleChoice>(null);
   const [photos, setPhotos] = useState<PhotoSlotState>(INITIAL_PHOTOS);
@@ -155,6 +174,8 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
   const [cameraSide, setCameraSide] = useState<FaceSide | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [videoReady, setVideoReady] = useState(false);
+  const [sourceSheetSide, setSourceSheetSide] = useState<FaceSide | null>(null);
+  const [captureCountdown, setCaptureCountdown] = useState<2 | 1 | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -178,6 +199,9 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     which: 0 | 1;
     pointerId: number;
   } | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryTargetSideRef = useRef<FaceSide | null>(null);
+  const captureCountdownTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const commitPhotos = useCallback(
     (updater: (prev: PhotoSlotState) => PhotoSlotState) => {
@@ -271,6 +295,23 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     };
   }, [cameraSide]);
 
+  useEffect(() => {
+    return () => {
+      captureCountdownTimersRef.current.forEach((id) => clearTimeout(id));
+      captureCountdownTimersRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    if (sourceSheetSide === null) return;
+    const { style } = document.body;
+    const prev = style.overflow;
+    style.overflow = "hidden";
+    return () => {
+      style.overflow = prev;
+    };
+  }, [sourceSheetSide]);
+
   const drawEyeGuides = useCallback(() => {
     const side = cameraSide;
     const box = guideBoxRef.current;
@@ -341,14 +382,66 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     };
   }, [cameraSide, drawEyeGuides]);
 
+  const clearCaptureCountdown = useCallback(() => {
+    captureCountdownTimersRef.current.forEach((id) => clearTimeout(id));
+    captureCountdownTimersRef.current = [];
+    setCaptureCountdown(null);
+  }, []);
+
   const openCamera = useCallback((side: FaceSide) => {
     setCameraError(null);
     setCameraSide(side);
   }, []);
 
   const closeCamera = useCallback(() => {
+    clearCaptureCountdown();
     setCameraSide(null);
+  }, [clearCaptureCountdown]);
+
+  const openSourceSheet = useCallback((side: FaceSide) => {
+    setSourceSheetSide(side);
   }, []);
+
+  const closeSourceSheet = useCallback(() => {
+    setSourceSheetSide(null);
+  }, []);
+
+  const onSourceSheetTakePhoto = useCallback(() => {
+    const side = sourceSheetSide;
+    if (!side) return;
+    setSourceSheetSide(null);
+    openCamera(side);
+  }, [sourceSheetSide, openCamera]);
+
+  const onSourceSheetChooseGallery = useCallback(() => {
+    const side = sourceSheetSide;
+    if (!side) return;
+    galleryTargetSideRef.current = side;
+    setSourceSheetSide(null);
+    requestAnimationFrame(() => {
+      galleryInputRef.current?.click();
+    });
+  }, [sourceSheetSide]);
+
+  const handleGalleryFileChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      const side = galleryTargetSideRef.current;
+      galleryTargetSideRef.current = null;
+      if (!file || !side) return;
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        commitPhotos((prev) => ({ ...prev, [side]: dataUrl }));
+        setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+        setErrorMsg((prev) => ({ ...prev, [side]: null }));
+        setManualBlockBySide((prev) => ({ ...prev, [side]: null }));
+      } catch {
+        // ignore
+      }
+    },
+    [commitPhotos],
+  );
 
   const captureFromVideo = useCallback(() => {
     const video = videoRef.current;
@@ -377,11 +470,29 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     ctx.restore();
     const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
 
+    clearCaptureCountdown();
     commitPhotos((prev) => ({ ...prev, [side]: dataUrl }));
     setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
     setErrorMsg((prev) => ({ ...prev, [side]: null }));
     setCameraSide(null);
-  }, [cameraSide, commitPhotos]);
+  }, [cameraSide, clearCaptureCountdown, commitPhotos]);
+
+  const beginCaptureCountdown = useCallback(() => {
+    if (!videoReady || cameraError || captureCountdown !== null) return;
+    clearCaptureCountdown();
+    setCaptureCountdown(2);
+    const t1 = setTimeout(() => setCaptureCountdown(1), 1000);
+    const t2 = setTimeout(() => {
+      captureFromVideo();
+    }, 2000);
+    captureCountdownTimersRef.current = [t1, t2];
+  }, [
+    videoReady,
+    cameraError,
+    captureCountdown,
+    clearCaptureCountdown,
+    captureFromVideo,
+  ]);
 
   const clearPhoto = useCallback(
     (side: FaceSide) => {
@@ -769,7 +880,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                   {src === null ? (
                     <button
                       type="button"
-                      onClick={() => openCamera(side)}
+                      onClick={() => openSourceSheet(side)}
                       className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-500/60 bg-zinc-900/40 px-2 text-center text-zinc-300 transition hover:border-zinc-400 hover:bg-zinc-800/50 active:scale-[0.99]"
                     >
                       <PlusIcon className="h-8 w-8 text-zinc-400" />
@@ -845,7 +956,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                       <div className="pointer-events-auto absolute inset-x-0 bottom-0 z-20 flex justify-center p-2">
                         <button
                           type="button"
-                          onClick={() => openCamera(side)}
+                          onClick={() => openSourceSheet(side)}
                           className="rounded-full bg-white/90 px-4 py-2 text-xs font-semibold text-zinc-900 shadow-sm ring-1 ring-black/10 backdrop-blur-sm transition hover:bg-white"
                         >
                           Retake
@@ -910,6 +1021,14 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
               }}
             />
 
+            {captureCountdown !== null ? (
+              <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-black/25">
+                <span className="text-[min(28vw,11rem)] font-black leading-none tabular-nums text-white [text-shadow:0_4px_32px_rgba(0,0,0,0.95)]">
+                  {captureCountdown}
+                </span>
+              </div>
+            ) : null}
+
             <div
               className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center p-4"
               aria-hidden
@@ -947,12 +1066,69 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
           <div className="z-20 shrink-0 border-t border-zinc-800/80 bg-zinc-950/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <button
               type="button"
-              onClick={captureFromVideo}
-              disabled={!!cameraError || !videoReady}
+              onClick={beginCaptureCountdown}
+              disabled={!!cameraError || !videoReady || captureCountdown !== null}
               className="w-full rounded-2xl bg-white py-4 text-center text-base font-extrabold text-zinc-950 shadow ring-1 ring-white/20 transition enabled:active:scale-[0.99] enabled:hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Take Photo
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      <input
+        ref={galleryInputRef}
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        aria-hidden
+        tabIndex={-1}
+        onChange={(e) => void handleGalleryFileChange(e)}
+      />
+
+      {sourceSheetSide !== null && styleChoice !== null ? (
+        <div className="fixed inset-0 z-[180] flex flex-col justify-end sm:items-center sm:justify-center sm:p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"
+            aria-label="Close menu"
+            onClick={closeSourceSheet}
+          />
+          <div
+            role="dialog"
+            aria-modal
+            aria-labelledby="source-sheet-title"
+            className="relative z-10 w-full max-w-md rounded-t-2xl border border-zinc-700/80 bg-zinc-900 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-2xl transition-transform duration-300 ease-out sm:rounded-2xl sm:border"
+          >
+            <p
+              id="source-sheet-title"
+              className="px-2 pb-2 text-center text-xs font-medium text-zinc-500"
+            >
+              {SIDE_LABELS[sourceSheetSide]}
+            </p>
+            <div className="flex flex-col gap-1.5">
+              <button
+                type="button"
+                onClick={onSourceSheetTakePhoto}
+                className="w-full rounded-xl bg-white py-3.5 text-center text-sm font-semibold text-zinc-950 transition hover:bg-zinc-100 active:scale-[0.99]"
+              >
+                Take Photo
+              </button>
+              <button
+                type="button"
+                onClick={onSourceSheetChooseGallery}
+                className="w-full rounded-xl border border-zinc-600 bg-zinc-800/80 py-3.5 text-center text-sm font-semibold text-white transition hover:bg-zinc-800 active:scale-[0.99]"
+              >
+                Choose from Gallery
+              </button>
+              <button
+                type="button"
+                onClick={closeSourceSheet}
+                className="w-full rounded-xl py-3.5 text-center text-sm font-medium text-zinc-400 transition hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
