@@ -37,33 +37,7 @@ const SILHOUETTE_LANDMARK_INDICES: readonly number[] = [
   67, 109,
 ] as const;
 
-const LEFT_EYE_INDICES: readonly number[] = [
-  33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161,
-  246,
-] as const;
-
-const RIGHT_EYE_INDICES: readonly number[] = [
-  362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384,
-  398,
-] as const;
-
-const LEFT_EYEBROW_INDICES: readonly number[] = [
-  70, 63, 105, 66, 107, 55, 65, 52, 53, 46,
-] as const;
-
-const RIGHT_EYEBROW_INDICES: readonly number[] = [
-  336, 296, 334, 293, 300, 285, 295, 282, 283, 276,
-] as const;
-
-const FEATURE_LANDMARK_INDICES: readonly number[] = [
-  ...SILHOUETTE_LANDMARK_INDICES,
-  ...LEFT_EYE_INDICES,
-  ...RIGHT_EYE_INDICES,
-  ...LEFT_EYEBROW_INDICES,
-  ...RIGHT_EYEBROW_INDICES,
-] as const;
-
-const FEATURE_LANDMARK_SET = new Set<number>(FEATURE_LANDMARK_INDICES);
+type StyleChoice = "twoBlockFade" | null;
 
 export type PhotoUploadProps = {
   /** 모든 슬롯의 사진이 바뀔 때마다 호출됩니다. data URL 또는 null입니다. */
@@ -125,6 +99,7 @@ function CloseIcon({ className }: { className?: string }) {
 }
 
 export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
+  const [styleChoice, setStyleChoice] = useState<StyleChoice>(null);
   const [photos, setPhotos] = useState<PhotoSlotState>(INITIAL_PHOTOS);
   const [isAnalyzing, setIsAnalyzing] = useState<Record<FaceSide, boolean>>({
     front: false,
@@ -181,6 +156,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       try {
         const dataUrl = await readFileAsDataUrl(file);
         commitPhotos((prev) => ({ ...prev, [side]: dataUrl }));
+        setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
       } catch {
         // MVP: 조용히 무시. 이후 토스트 등으로 확장 가능
       }
@@ -233,43 +209,36 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         return { x: xCss * dpr, y: yCss * dpr };
       };
 
-      // 1) 실루엣을 "마스크"처럼 선으로 연결
-      if (SILHOUETTE_LANDMARK_INDICES.length >= 2) {
-        ctx.beginPath();
-        const firstIdx = SILHOUETTE_LANDMARK_INDICES[0];
-        const first = points[firstIdx];
-        if (first) {
-          const p0 = toCanvas(first);
-          ctx.moveTo(p0.x, p0.y);
-          for (let i = 1; i < SILHOUETTE_LANDMARK_INDICES.length; i += 1) {
-            const idx = SILHOUETTE_LANDMARK_INDICES[i];
-            const pt = points[idx];
-            if (!pt) continue;
-            const p = toCanvas(pt);
-            ctx.lineTo(p.x, p.y);
-          }
-          ctx.closePath();
-          ctx.strokeStyle = "rgba(50, 205, 50, 0.5)";
-          ctx.lineWidth = 1.5 * dpr;
-          ctx.stroke();
-        }
-      }
+      // 점은 아예 그리지 않고, 실루엣만 "굵은 윤곽선 + 내부 옅은 채움"으로 표시합니다.
+      if (SILHOUETTE_LANDMARK_INDICES.length < 2) return;
 
-      // 2) 포인트를 UI 핸들처럼 큼직하게 표시
-      const radius = 4 * dpr;
-      ctx.fillStyle = "#FFFFFF";
-      ctx.strokeStyle = "#32CD32";
-      ctx.lineWidth = 2 * dpr;
+      const firstIdx = SILHOUETTE_LANDMARK_INDICES[0];
+      const first = points[firstIdx];
+      if (!first) return;
 
-      for (let i = 0; i < points.length; i += 1) {
-        if (!FEATURE_LANDMARK_SET.has(i)) continue;
-        const p = points[i];
-        const { x, y } = toCanvas(p);
-        ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+      ctx.beginPath();
+      const p0 = toCanvas(first);
+      ctx.moveTo(p0.x, p0.y);
+
+      for (let i = 1; i < SILHOUETTE_LANDMARK_INDICES.length; i += 1) {
+        const idx = SILHOUETTE_LANDMARK_INDICES[i];
+        const pt = points[idx];
+        if (!pt) continue;
+        const p = toCanvas(pt);
+        ctx.lineTo(p.x, p.y);
       }
+      ctx.closePath();
+
+      // Fill (area)
+      ctx.fillStyle = "rgba(0, 255, 255, 0.1)";
+      ctx.fill();
+
+      // Stroke (neon)
+      ctx.strokeStyle = "#00FFFF";
+      ctx.lineWidth = 6 * dpr;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke();
     },
     [landmarksBySide],
   );
@@ -301,98 +270,161 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     return () => window.removeEventListener("resize", onResize);
   }, [drawLandmarks]);
 
+  const allUploaded = SIDE_ORDER.every((side) => photos[side] !== null);
+  const allScanFinished =
+    SIDE_ORDER.every((side) => !isAnalyzing[side]) &&
+    SIDE_ORDER.every((side) => photos[side] === null || landmarksBySide[side] !== null);
+  const canStartGuide = allUploaded && allScanFinished;
+
   return (
     <div className={className}>
-      {/* English Banner Style */}
-      <div className="mb-6 flex items-start gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3.5 backdrop-blur-md">
-        <span className="text-lg">💧</span>
-        <p className="text-sm leading-relaxed text-zinc-300">
-          <strong className="font-semibold text-white">Accuracy Tip: </strong> 
-          Wet your hair with a spray bottle and tie it tightly with a hair tie. 
-          This helps the AI identify your head shape precisely.
-        </p>
-      </div>
+      {styleChoice === null ? (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-4 backdrop-blur-md">
+            <p className="text-sm font-semibold text-white">
+              어떤 스타일로 자를까요?{" "}
+              <span className="font-medium text-zinc-300">
+                (Choose your style)
+              </span>
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-zinc-400">
+              MVP 버전에서는 1가지 스타일만 제공됩니다.
+            </p>
+          </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:gap-4">
-        {SIDE_ORDER.map((side) => {
-          const src = photos[side];
-          const label = SIDE_LABELS[side];
+          <button
+            type="button"
+            onClick={() => setStyleChoice("twoBlockFade")}
+            className="group w-full rounded-2xl border border-zinc-800 bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950 p-5 text-left shadow-[0_0_0_1px_rgba(255,255,255,0.04)] transition hover:border-zinc-700 hover:shadow-[0_0_0_1px_rgba(255,255,255,0.08)] active:scale-[0.99]"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-base font-semibold text-white">
+                  투블럭 + 상고머리
+                </p>
+                <p className="mt-1 text-sm font-medium text-zinc-300">
+                  Two-Block &amp; Fade
+                </p>
+                <p className="mt-3 text-xs leading-relaxed text-zinc-400">
+                  4면 사진을 업로드하면 AI가 두상 윤곽을 굵게 스캔해 보여줘요.
+                </p>
+              </div>
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10 transition group-hover:bg-white/7">
+                <span className="text-lg">✂️</span>
+              </div>
+            </div>
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          <div className="flex items-start gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3.5 backdrop-blur-md">
+            <span className="text-lg">💧</span>
+            <p className="text-sm leading-relaxed text-zinc-300">
+              <strong className="font-semibold text-white">Accuracy Tip: </strong>
+              Wet your hair with a spray bottle and tie it tightly with a hair
+              tie. This helps the AI identify your head shape precisely.
+            </p>
+          </div>
 
-          return (
-            <div key={side} className="relative aspect-square min-h-0">
-              <input
-                ref={(el) => {
-                  inputRefs.current[side] = el;
-                }}
-                type="file"
-                accept="image/*"
-                className="sr-only"
-                aria-label={`Select image for ${label}`}
-                onChange={(e) => void handleFileChange(side, e)}
-              />
+          <div className="grid grid-cols-2 gap-3 sm:gap-4">
+            {SIDE_ORDER.map((side) => {
+              const src = photos[side];
+              const label = SIDE_LABELS[side];
 
-              {src === null ? (
-                <button
-                  type="button"
-                  onClick={() => openPicker(side)}
-                  className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-500/60 bg-zinc-900/40 px-2 text-center text-zinc-300 transition hover:border-zinc-400 hover:bg-zinc-800/50 active:scale-[0.99]"
-                >
-                  <PlusIcon className="h-8 w-8 text-zinc-400" />
-                  <span className="text-sm font-medium text-zinc-200">
-                    {label}
-                  </span>
-                </button>
-              ) : (
-                <div className="relative h-full w-full overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900">
-                  {/* eslint-disable-next-line @next/next/no-img-element -- 사용자 업로드 동적 data URL */}
-                  <img
+              return (
+                <div key={side} className="relative aspect-square min-h-0">
+                  <input
                     ref={(el) => {
-                      imgRefs.current[side] = el;
+                      inputRefs.current[side] = el;
                     }}
-                    src={src}
-                    alt={`${label} preview`}
-                    className="h-full w-full object-cover"
-                    onLoad={() => void analyzeAndDraw(side)}
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    aria-label={`Select image for ${label}`}
+                    onChange={(e) => void handleFileChange(side, e)}
                   />
-                  <canvas
-                    ref={(el) => {
-                      canvasRefs.current[side] = el;
-                    }}
-                    className="pointer-events-none absolute inset-0 h-full w-full"
-                    aria-hidden
-                  />
-                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-black/30" />
-                  {isAnalyzing[side] ? (
-                    <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                      <div className="flex items-center gap-3 rounded-lg bg-black/60 px-4 py-3 text-sm font-semibold text-white ring-1 ring-white/10 backdrop-blur-sm">
-                        <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                        <span>🤖 Analyzing shape...</span>
-                      </div>
-                    </div>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => clearPhoto(side)}
-                    className="pointer-events-auto absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white ring-1 ring-white/20 backdrop-blur-sm transition hover:bg-black/70"
-                    aria-label={`Delete ${label}`}
-                  >
-                    <CloseIcon className="h-4 w-4" />
-                  </button>
-                  <div className="pointer-events-auto absolute inset-x-0 bottom-0 flex justify-center p-2">
+
+                  {src === null ? (
                     <button
                       type="button"
                       onClick={() => openPicker(side)}
-                      className="rounded-full bg-white/90 px-4 py-2 text-xs font-semibold text-zinc-900 shadow-sm ring-1 ring-black/10 backdrop-blur-sm transition hover:bg-white"
+                      className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-500/60 bg-zinc-900/40 px-2 text-center text-zinc-300 transition hover:border-zinc-400 hover:bg-zinc-800/50 active:scale-[0.99]"
                     >
-                      Retake
+                      <PlusIcon className="h-8 w-8 text-zinc-400" />
+                      <span className="text-sm font-medium text-zinc-200">
+                        {label}
+                      </span>
                     </button>
-                  </div>
+                  ) : (
+                    <div className="relative h-full w-full overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900">
+                      {/* eslint-disable-next-line @next/next/no-img-element -- 사용자 업로드 동적 data URL */}
+                      <img
+                        ref={(el) => {
+                          imgRefs.current[side] = el;
+                        }}
+                        src={src}
+                        alt={`${label} preview`}
+                        className="h-full w-full object-cover"
+                        onLoad={() => void analyzeAndDraw(side)}
+                      />
+                      <canvas
+                        ref={(el) => {
+                          canvasRefs.current[side] = el;
+                        }}
+                        className="pointer-events-none absolute inset-0 h-full w-full"
+                        aria-hidden
+                      />
+                      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/35 via-transparent to-black/20" />
+                      {isAnalyzing[side] ? (
+                        <div className="pointer-events-none absolute inset-0 grid place-items-center">
+                          <div className="flex items-center gap-3 rounded-lg bg-black/60 px-4 py-3 text-sm font-semibold text-white ring-1 ring-white/10 backdrop-blur-sm">
+                            <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                            <span>🤖 Analyzing shape...</span>
+                          </div>
+                        </div>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => clearPhoto(side)}
+                        className="pointer-events-auto absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white ring-1 ring-white/20 backdrop-blur-sm transition hover:bg-black/70"
+                        aria-label={`Delete ${label}`}
+                      >
+                        <CloseIcon className="h-4 w-4" />
+                      </button>
+                      <div className="pointer-events-auto absolute inset-x-0 bottom-0 flex justify-center p-2">
+                        <button
+                          type="button"
+                          onClick={() => openPicker(side)}
+                          className="rounded-full bg-white/90 px-4 py-2 text-xs font-semibold text-zinc-900 shadow-sm ring-1 ring-black/10 backdrop-blur-sm transition hover:bg-white"
+                        >
+                          Retake
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
+              );
+            })}
+          </div>
+
+          {canStartGuide ? (
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  console.log("Start Step-by-Step Guide");
+                }}
+                className="w-full rounded-2xl bg-white px-5 py-4 text-center text-sm font-extrabold text-zinc-950 shadow-sm ring-1 ring-black/10 transition hover:bg-zinc-100 active:scale-[0.99]"
+              >
+                가이드라인 시작하기{" "}
+                <span className="font-semibold">
+                  (Start Step-by-Step Guide)
+                </span>
+              </button>
             </div>
-          );
-        })}
-      </div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
