@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ChangeEvent,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { analyzeFace, type FacePixelPoint } from "../utils/faceAnalyzer";
 
@@ -30,7 +24,7 @@ const SIDE_LABELS: Record<FaceSide, string> = {
   right: "Right Side",
 };
 
-/** 정면/후면: 턱·이마·볼·관자(귀 쪽) 위주 윤곽 — 귀 뒤(234,127) 체인을 빼 누락/부정확해도 흐트러지지 않게 함 */
+/** 정면/후면: 턱·이마·볼·관자(귀 쪽) 위주 윤곽 */
 const FRONT_BACK_OVAL_INDICES: readonly number[] = [
   10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379,
   378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132,
@@ -51,24 +45,6 @@ export type PhotoUploadProps = {
   className?: string;
 };
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result === "string") {
-        resolve(result);
-        return;
-      }
-      reject(new Error("파일을 data URL로 읽을 수 없습니다."));
-    };
-    reader.onerror = () => {
-      reject(reader.error ?? new Error("파일 읽기에 실패했습니다."));
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
 function countValid(
   points: FacePixelPoint[],
   indices: readonly number[],
@@ -78,6 +54,13 @@ function countValid(
     if (points[i] != null) n += 1;
   }
   return n;
+}
+
+function guideHeadlineForSide(side: FaceSide): string {
+  if (side === "left" || side === "right") {
+    return "귀와 눈썹이 잘 보이게 측면을 맞춰주세요";
+  }
+  return "얼굴을 이 선에 맞춰주세요";
 }
 
 function PlusIcon({ className }: { className?: string }) {
@@ -139,12 +122,12 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     initialErrorRecord,
   );
 
-  const inputRefs = useRef<Record<FaceSide, HTMLInputElement | null>>({
-    front: null,
-    back: null,
-    left: null,
-    right: null,
-  });
+  const [cameraSide, setCameraSide] = useState<FaceSide | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [videoReady, setVideoReady] = useState(false);
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const imgRefs = useRef<Record<FaceSide, HTMLImageElement | null>>({
     front: null,
@@ -170,23 +153,117 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     [onPhotosChange],
   );
 
-  const handleFileChange = useCallback(
-    async (side: FaceSide, event: ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      event.target.value = "";
-      if (!file) return;
+  const stopStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    const v = videoRef.current;
+    if (v) {
+      v.srcObject = null;
+    }
+  }, []);
 
-      try {
-        const dataUrl = await readFileAsDataUrl(file);
-        commitPhotos((prev) => ({ ...prev, [side]: dataUrl }));
-        setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
-        setErrorMsg((prev) => ({ ...prev, [side]: null }));
-      } catch {
-        // ignore
-      }
-    },
-    [commitPhotos],
-  );
+  const startStream = useCallback(async () => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setCameraError("이 브라우저는 카메라를 지원하지 않습니다.");
+      return;
+    }
+    setCameraError(null);
+    setVideoReady(false);
+    try {
+      stopStream();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "user" } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      const attach = async () => {
+        let v = videoRef.current;
+        if (!v) {
+          await new Promise<void>((r) => {
+            requestAnimationFrame(() => r());
+          });
+          v = videoRef.current;
+        }
+        if (!v) {
+          setCameraError("카메라 화면을 불러올 수 없습니다.");
+          return;
+        }
+        v.srcObject = stream;
+        v.muted = true;
+        v.playsInline = true;
+        setVideoReady(false);
+        await v.play();
+      };
+      await attach();
+    } catch (e) {
+      const msg =
+        e instanceof Error
+          ? e.message
+          : "카메라에 접근할 수 없습니다. 권한을 확인해 주세요.";
+      setCameraError(msg);
+    }
+  }, [stopStream]);
+
+  useLayoutEffect(() => {
+    if (!cameraSide) {
+      stopStream();
+      setCameraError(null);
+      setVideoReady(false);
+      return;
+    }
+    void startStream();
+    return () => {
+      stopStream();
+      setVideoReady(false);
+    };
+  }, [cameraSide, startStream, stopStream]);
+
+  useEffect(() => {
+    if (!cameraSide) {
+      return;
+    }
+    const { style } = document.body;
+    const prev = style.overflow;
+    style.overflow = "hidden";
+    return () => {
+      style.overflow = prev;
+    };
+  }, [cameraSide]);
+
+  const openCamera = useCallback((side: FaceSide) => {
+    setCameraError(null);
+    setCameraSide(side);
+  }, []);
+
+  const closeCamera = useCallback(() => {
+    setCameraSide(null);
+  }, []);
+
+  const captureFromVideo = useCallback(() => {
+    const video = videoRef.current;
+    const side = cameraSide;
+    if (!video || !side) return;
+
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (w === 0 || h === 0) {
+      setCameraError("카메라가 아직 준비되지 않았습니다. 잠시 후 다시 눌러주세요.");
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, w, h);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+
+    commitPhotos((prev) => ({ ...prev, [side]: dataUrl }));
+    setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+    setErrorMsg((prev) => ({ ...prev, [side]: null }));
+    setCameraSide(null);
+  }, [cameraSide, commitPhotos]);
 
   const clearPhoto = useCallback(
     (side: FaceSide) => {
@@ -197,10 +274,6 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     },
     [commitPhotos],
   );
-
-  const openPicker = useCallback((side: FaceSide) => {
-    inputRefs.current[side]?.click();
-  }, []);
 
   const drawLandmarks = useCallback(
     (side: FaceSide) => {
@@ -412,7 +485,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                 <p className="text-base font-semibold text-white">투블럭 + 상고머리</p>
                 <p className="mt-1 text-sm font-medium text-zinc-300">Two-Block &amp; Fade</p>
                 <p className="mt-3 text-xs leading-relaxed text-zinc-400">
-                  4면 사진을 업로드하면 AI가 두상 윤곽을 굵게 스캔해 보여줘요.
+                  4면 사진을 촬영하면 AI가 두상 윤곽을 굵게 스캔해 보여줘요.
                 </p>
               </div>
               <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10 transition group-hover:bg-white/7">
@@ -441,21 +514,10 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
 
               return (
                 <div key={side} className="relative aspect-square min-h-0">
-                  <input
-                    ref={(el) => {
-                      inputRefs.current[side] = el;
-                    }}
-                    type="file"
-                    accept="image/*"
-                    className="sr-only"
-                    aria-label={`Select image for ${label}`}
-                    onChange={(e) => void handleFileChange(side, e)}
-                  />
-
                   {src === null ? (
                     <button
                       type="button"
-                      onClick={() => openPicker(side)}
+                      onClick={() => openCamera(side)}
                       className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-500/60 bg-zinc-900/40 px-2 text-center text-zinc-300 transition hover:border-zinc-400 hover:bg-zinc-800/50 active:scale-[0.99]"
                     >
                       <PlusIcon className="h-8 w-8 text-zinc-400" />
@@ -463,7 +525,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                     </button>
                   ) : (
                     <div className="relative h-full w-full overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900">
-                      {/* eslint-disable-next-line @next/next/no-img-element -- 사용자 업로드 동적 data URL */}
+                      {/* eslint-disable-next-line @next/next/no-img-element -- 캡처 data URL */}
                       <img
                         ref={(el) => {
                           imgRefs.current[side] = el;
@@ -510,7 +572,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                       <div className="pointer-events-auto absolute inset-x-0 bottom-0 z-20 flex justify-center p-2">
                         <button
                           type="button"
-                          onClick={() => openPicker(side)}
+                          onClick={() => openCamera(side)}
                           className="rounded-full bg-white/90 px-4 py-2 text-xs font-semibold text-zinc-900 shadow-sm ring-1 ring-black/10 backdrop-blur-sm transition hover:bg-white"
                         >
                           Retake
@@ -539,6 +601,76 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
           ) : null}
         </div>
       )}
+
+      {cameraSide ? (
+        <div
+          className="fixed inset-0 z-[200] flex flex-col bg-black"
+          role="dialog"
+          aria-modal
+          aria-labelledby="live-camera-title"
+        >
+          <div className="absolute left-0 right-0 top-0 z-30 flex items-center justify-between p-3">
+            <p id="live-camera-title" className="text-sm font-semibold text-white">
+              {SIDE_LABELS[cameraSide]}
+            </p>
+            <button
+              type="button"
+              onClick={closeCamera}
+              className="grid h-10 w-10 place-items-center rounded-full bg-black/50 text-white ring-1 ring-white/20 transition hover:bg-black/70"
+              aria-label="닫기"
+            >
+              <CloseIcon className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="relative min-h-0 flex-1">
+            <video
+              ref={videoRef}
+              className="h-full w-full object-cover"
+              autoPlay
+              playsInline
+              muted
+              onLoadedMetadata={() => {
+                setVideoReady(true);
+              }}
+            />
+
+            <div
+              className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center p-4"
+              aria-hidden
+            >
+              <div className="flex w-full max-w-sm flex-col items-center">
+                <p className="mb-4 text-center text-base font-semibold text-white drop-shadow [text-shadow:0_1px_4px_rgba(0,0,0,0.8)] sm:text-lg">
+                  {guideHeadlineForSide(cameraSide)}
+                </p>
+                <div
+                  className="h-[min(50vh,400px)] w-[min(85vw,360px)] rounded-[100%] border-[3px] border-dashed border-white/90 bg-transparent"
+                  style={{
+                    boxShadow: "0 0 0 100vmax rgba(0,0,0,0.45)",
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {cameraError ? (
+            <div className="z-20 mx-4 mb-2 rounded-lg bg-red-600/90 px-3 py-2 text-sm text-white ring-1 ring-white/20">
+              {cameraError}
+            </div>
+          ) : null}
+
+          <div className="z-20 shrink-0 border-t border-zinc-800/80 bg-zinc-950/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <button
+              type="button"
+              onClick={captureFromVideo}
+              disabled={!!cameraError || !videoReady}
+              className="w-full rounded-2xl bg-white py-4 text-center text-base font-extrabold text-zinc-950 shadow ring-1 ring-white/20 transition enabled:active:scale-[0.99] enabled:hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              촬영하기
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
