@@ -24,14 +24,14 @@ const SIDE_LABELS: Record<FaceSide, string> = {
   right: "Right Side",
 };
 
-/** 정면/후면: 턱·이마·볼·관자(귀 쪽) 위주 윤곽 */
+/** Front/back: face oval landmarks (jaw, cheeks, hairline) */
 const FRONT_BACK_OVAL_INDICES: readonly number[] = [
   10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379,
   378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132,
 ] as const;
 
 const ANALYSIS_ERROR_MSG =
-  "⚠️ 눈썹과 측면 귀가 잘 보이게 머리를 까고 다시 찍어주세요";
+  "⚠️ Could not detect face. Please tie your hair back to show your eyebrows and ears clearly.";
 
 type StyleChoice = "twoBlockFade" | null;
 
@@ -56,8 +56,16 @@ function countValid(
   return n;
 }
 
-/** 인앱 카메라 오버레이 — 모든 슬롯 공통 (원거리 + 얼굴/눈 맞춤) */
-const CAMERA_OVERLAY_HEADLINE = "팔을 쭉 뻗어 눈과 얼굴 윤곽을 맞춰주세요";
+const CAMERA_HEADLINE_DEFAULT =
+  "Extend your arm and align your face with the outline.";
+
+const CAMERA_HEADLINE_SIDE =
+  "Align your side profile making sure your ear and eyebrow are visible.";
+
+function cameraHeadlineForSide(side: FaceSide): string {
+  if (side === "left" || side === "right") return CAMERA_HEADLINE_SIDE;
+  return CAMERA_HEADLINE_DEFAULT;
+}
 
 function PlusIcon({ className }: { className?: string }) {
   return (
@@ -124,6 +132,8 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const guideBoxRef = useRef<HTMLDivElement | null>(null);
+  const eyeGuideCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const imgRefs = useRef<Record<FaceSide, HTMLImageElement | null>>({
     front: null,
@@ -160,7 +170,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
 
   const startStream = useCallback(async () => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      setCameraError("이 브라우저는 카메라를 지원하지 않습니다.");
+      setCameraError("This browser does not support camera access.");
       return;
     }
     setCameraError(null);
@@ -181,7 +191,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
           v = videoRef.current;
         }
         if (!v) {
-          setCameraError("카메라 화면을 불러올 수 없습니다.");
+          setCameraError("Could not load the camera view.");
           return;
         }
         v.srcObject = stream;
@@ -195,7 +205,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       const msg =
         e instanceof Error
           ? e.message
-          : "카메라에 접근할 수 없습니다. 권한을 확인해 주세요.";
+          : "Could not access the camera. Please check permissions.";
       setCameraError(msg);
     }
   }, [stopStream]);
@@ -226,6 +236,55 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     };
   }, [cameraSide]);
 
+  const drawEyeGuides = useCallback(() => {
+    const box = guideBoxRef.current;
+    const canvas = eyeGuideCanvasRef.current;
+    if (!box || !canvas) return;
+    const w = box.clientWidth;
+    const h = box.clientHeight;
+    if (w < 2 || h < 2) return;
+    const dpr = window.devicePixelRatio ?? 1;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    canvas.width = Math.max(1, Math.round(w * dpr));
+    canvas.height = Math.max(1, Math.round(h * dpr));
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(dpr, dpr);
+
+    const radiusY = Math.max(7, h * 0.054);
+    const radiusX = radiusY * 2.15; // width ≥ 2× height for comfortable horizontal ovals
+    const eyeY = h * 0.28;
+    const leftCx = w * 0.27;
+    const rightCx = w * 0.73;
+
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([5, 5]);
+    for (const cx of [leftCx, rightCx]) {
+      ctx.beginPath();
+      ctx.ellipse(cx, eyeY, radiusX, radiusY, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!cameraSide) return;
+    drawEyeGuides();
+    const el = guideBoxRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => {
+        drawEyeGuides();
+      });
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+    };
+  }, [cameraSide, drawEyeGuides]);
+
   const openCamera = useCallback((side: FaceSide) => {
     setCameraError(null);
     setCameraSide(side);
@@ -243,7 +302,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     const w = video.videoWidth;
     const h = video.videoHeight;
     if (w === 0 || h === 0) {
-      setCameraError("카메라가 아직 준비되지 않았습니다. 잠시 후 다시 눌러주세요.");
+      setCameraError("The camera is not ready yet. Please try again in a moment.");
       return;
     }
 
@@ -252,7 +311,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     canvas.height = h;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    // 화면(거울)과 동일: 비디오 버퍼는 미러가 아니므로 X축 뒤집기
+    // Mirror the frame to match the mirrored on-screen preview
     ctx.save();
     ctx.translate(w, 0);
     ctx.scale(-1, 1);
@@ -467,12 +526,9 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       {styleChoice === null ? (
         <div className="space-y-4">
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-4 backdrop-blur-md">
-            <p className="text-sm font-semibold text-white">
-              어떤 스타일로 자를까요?{" "}
-              <span className="font-medium text-zinc-300">(Choose your style)</span>
-            </p>
+            <p className="text-sm font-semibold text-white">Choose your style</p>
             <p className="mt-1 text-xs leading-relaxed text-zinc-400">
-              MVP 버전에서는 1가지 스타일만 제공됩니다.
+              MVP: one style is available for now.
             </p>
           </div>
 
@@ -483,10 +539,10 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
           >
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-base font-semibold text-white">투블럭 + 상고머리</p>
-                <p className="mt-1 text-sm font-medium text-zinc-300">Two-Block &amp; Fade</p>
+                <p className="text-base font-semibold text-white">Two-Block &amp; Fade</p>
+                <p className="mt-1 text-sm font-medium text-zinc-300">Four-angle capture</p>
                 <p className="mt-3 text-xs leading-relaxed text-zinc-400">
-                  4면 사진을 촬영하면 AI가 두상 윤곽을 굵게 스캔해 보여줘요.
+                  Capture four views and the AI will scan your head shape with a bold outline.
                 </p>
               </div>
               <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10 transition group-hover:bg-white/7">
@@ -526,7 +582,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                     </button>
                   ) : (
                     <div className="relative h-full w-full overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900">
-                      {/* eslint-disable-next-line @next/next/no-img-element -- 캡처 data URL */}
+                      {/* eslint-disable-next-line @next/next/no-img-element -- captured data URL */}
                       <img
                         ref={(el) => {
                           imgRefs.current[side] = el;
@@ -595,8 +651,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                 }}
                 className="w-full rounded-2xl bg-white px-5 py-4 text-center text-sm font-extrabold text-zinc-950 shadow-sm ring-1 ring-black/10 transition hover:bg-zinc-100 active:scale-[0.99]"
               >
-                가이드라인 시작하기{" "}
-                <span className="font-semibold">(Start Step-by-Step Guide)</span>
+                Start Step-by-Step Guide
               </button>
             </div>
           ) : null}
@@ -618,7 +673,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
               type="button"
               onClick={closeCamera}
               className="grid h-10 w-10 place-items-center rounded-full bg-black/50 text-white ring-1 ring-white/20 transition hover:bg-black/70"
-              aria-label="닫기"
+              aria-label="Close"
             >
               <CloseIcon className="h-5 w-5" />
             </button>
@@ -633,6 +688,9 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
               muted
               onLoadedMetadata={() => {
                 setVideoReady(true);
+                requestAnimationFrame(() => {
+                  drawEyeGuides();
+                });
               }}
             />
 
@@ -642,22 +700,23 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
             >
               <div className="flex w-full max-w-sm flex-col items-center">
                 <p className="mb-3 text-center text-sm font-semibold leading-snug text-white [text-shadow:0_1px_4px_rgba(0,0,0,0.8)] sm:mb-4 sm:max-w-md sm:text-base">
-                  {CAMERA_OVERLAY_HEADLINE}
+                  {cameraHeadlineForSide(cameraSide)}
                 </p>
-                {/* 약 40~45% 뷰포트 높이 + 여권식 얼굴/눈 맞춤: 큰 타원 + 상단 눈형 원 2개 */}
                 <div
+                  ref={guideBoxRef}
                   className="relative h-[min(42.5dvh,45dvh,400px)] w-[min(30dvh,78vw,280px)] max-h-[45vh] shrink-0"
                 >
                   <div
-                    className="absolute inset-0 rounded-[100%] border-2 border-dashed border-white/90"
+                    className="absolute inset-0 z-0 rounded-[100%] border-2 border-dashed border-white/90"
                     style={{
                       boxShadow: "0 0 0 100vmax rgba(0,0,0,0.45)",
                     }}
                   />
-                  <div className="absolute inset-x-0 top-[24%] flex items-start justify-center gap-[clamp(1.5rem,12vw,3.25rem)] sm:top-[27%]">
-                    <div className="h-[clamp(1.6rem,5.5vw,2.4rem)] w-[clamp(1.6rem,5.5vw,2.4rem)] shrink-0 rounded-full border border-dashed border-white/75" />
-                    <div className="h-[clamp(1.6rem,5.5vw,2.4rem)] w-[clamp(1.6rem,5.5vw,2.4rem)] shrink-0 rounded-full border border-dashed border-white/75" />
-                  </div>
+                  <canvas
+                    ref={eyeGuideCanvasRef}
+                    className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+                    aria-hidden
+                  />
                 </div>
               </div>
             </div>
@@ -676,7 +735,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
               disabled={!!cameraError || !videoReady}
               className="w-full rounded-2xl bg-white py-4 text-center text-base font-extrabold text-zinc-950 shadow ring-1 ring-white/20 transition enabled:active:scale-[0.99] enabled:hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              촬영하기
+              Take Photo
             </button>
           </div>
         </div>
