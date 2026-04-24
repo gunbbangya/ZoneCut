@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 
 import { analyzeFace, type FacePixelPoint } from "../utils/faceAnalyzer";
 
@@ -33,7 +40,19 @@ const FRONT_BACK_OVAL_INDICES: readonly number[] = [
 const ANALYSIS_ERROR_MSG =
   "⚠️ Could not detect face. Please tie your hair back to show your eyebrows and ears clearly.";
 
+const MANUAL_MODE_HINT =
+  "Drag the dots to match your ear top and eyebrow end";
+
 type StyleChoice = "twoBlockFade" | null;
+
+type ManualBlockLine = { p0: FacePixelPoint; p1: FacePixelPoint };
+
+function defaultManualBlockLine(nw: number, nh: number): ManualBlockLine {
+  return {
+    p0: { x: nw * 0.18, y: nh * 0.5 },
+    p1: { x: nw * 0.82, y: nh * 0.5 },
+  };
+}
 
 const TWO_BLOCK_LINE: Record<"left" | "right", { temple: number; earTop: number }> = {
   left: { temple: 54, earTop: 127 },
@@ -59,10 +78,14 @@ function countValid(
 const CAMERA_HEADLINE_DEFAULT =
   "Extend your arm and align your face with the outline.";
 
+const CAMERA_HEADLINE_BACK =
+  "Position the back of your head inside the frame.";
+
 const CAMERA_HEADLINE_SIDE =
-  "Align your side profile making sure your ear and eyebrow are visible.";
+  "Turn your head slightly (45 degrees) so your nose tip and one ear are clearly visible.";
 
 function cameraHeadlineForSide(side: FaceSide): string {
+  if (side === "back") return CAMERA_HEADLINE_BACK;
   if (side === "left" || side === "right") return CAMERA_HEADLINE_SIDE;
   return CAMERA_HEADLINE_DEFAULT;
 }
@@ -125,6 +148,9 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
   const [errorMsg, setErrorMsg] = useState<Record<FaceSide, string | null>>(
     initialErrorRecord,
   );
+  const [manualBlockBySide, setManualBlockBySide] = useState<
+    Record<FaceSide, ManualBlockLine | null>
+  >({ front: null, back: null, left: null, right: null });
 
   const [cameraSide, setCameraSide] = useState<FaceSide | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -147,6 +173,11 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     left: null,
     right: null,
   });
+  const blockDragRef = useRef<{
+    side: "left" | "right";
+    which: 0 | 1;
+    pointerId: number;
+  } | null>(null);
 
   const commitPhotos = useCallback(
     (updater: (prev: PhotoSlotState) => PhotoSlotState) => {
@@ -178,7 +209,11 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     try {
       stopStream();
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "user" } },
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: { ideal: "user" },
+        },
         audio: false,
       });
       streamRef.current = stream;
@@ -237,9 +272,10 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
   }, [cameraSide]);
 
   const drawEyeGuides = useCallback(() => {
+    const side = cameraSide;
     const box = guideBoxRef.current;
     const canvas = eyeGuideCanvasRef.current;
-    if (!box || !canvas) return;
+    if (!box || !canvas || !side) return;
     const w = box.clientWidth;
     const h = box.clientHeight;
     if (w < 2 || h < 2) return;
@@ -252,22 +288,42 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.scale(dpr, dpr);
 
-    const radiusY = Math.max(7, h * 0.054);
-    const radiusX = radiusY * 2.15; // width ≥ 2× height for comfortable horizontal ovals
-    const eyeY = h * 0.28;
-    const leftCx = w * 0.27;
-    const rightCx = w * 0.73;
-
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-    ctx.lineWidth = 1.2;
-    ctx.setLineDash([5, 5]);
-    for (const cx of [leftCx, rightCx]) {
-      ctx.beginPath();
-      ctx.ellipse(cx, eyeY, radiusX, radiusY, 0, 0, Math.PI * 2);
-      ctx.stroke();
+    if (side === "back") {
+      return;
     }
-    ctx.setLineDash([]);
-  }, []);
+
+    if (side === "front") {
+      const radiusY = Math.max(7, h * 0.054);
+      const radiusX = radiusY * 2.15; // width ≥ 2× height
+      const centerY = h / 2;
+      const eyeY = centerY - radiusY * 0.1;
+      const leftCx = w * 0.27;
+      const rightCx = w * 0.73;
+
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([5, 5]);
+      for (const cx of [leftCx, rightCx]) {
+        ctx.beginPath();
+        ctx.ellipse(cx, eyeY, radiusX, radiusY, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      return;
+    }
+
+    if (side === "left" || side === "right") {
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.88)";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      const cx = w / 2;
+      ctx.moveTo(cx, h * 0.18);
+      ctx.lineTo(cx, h * 0.82);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }, [cameraSide]);
 
   useLayoutEffect(() => {
     if (!cameraSide) return;
@@ -299,6 +355,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     const side = cameraSide;
     if (!video || !side) return;
 
+    // Intrinsic frame dimensions (1:1 with canvas) — preserves full camera resolution
     const w = video.videoWidth;
     const h = video.videoHeight;
     if (w === 0 || h === 0) {
@@ -311,6 +368,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     canvas.height = h;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    ctx.imageSmoothingEnabled = false;
     // Mirror the frame to match the mirrored on-screen preview
     ctx.save();
     ctx.translate(w, 0);
@@ -331,6 +389,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
       setIsAnalyzing((prev) => ({ ...prev, [side]: false }));
       setErrorMsg((prev) => ({ ...prev, [side]: null }));
+      setManualBlockBySide((prev) => ({ ...prev, [side]: null }));
     },
     [commitPhotos],
   );
@@ -339,19 +398,8 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     (side: FaceSide) => {
       const img = imgRefs.current[side];
       const canvas = canvasRefs.current[side];
-      const points = landmarksBySide[side];
       if (!img || !canvas) return;
-      if (!points || points.length === 0) {
-        const ctx0 = canvas.getContext("2d");
-        if (ctx0) {
-          const rect = img.getBoundingClientRect();
-          const dpr = window.devicePixelRatio ?? 1;
-          canvas.width = Math.max(1, Math.round(rect.width * dpr));
-          canvas.height = Math.max(1, Math.round(rect.height * dpr));
-          ctx0.clearRect(0, 0, canvas.width, canvas.height);
-        }
-        return;
-      }
+      if (img.naturalWidth === 0) return;
 
       const rect = img.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
@@ -360,15 +408,16 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       const targetWidth = Math.max(1, Math.round(rect.width * dpr));
       const targetHeight = Math.max(1, Math.round(rect.height * dpr));
 
-      if (canvas.width !== targetWidth) canvas.width = targetWidth;
-      if (canvas.height !== targetHeight) canvas.height = targetHeight;
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      const points = landmarksBySide[side];
+      const manual = manualBlockBySide[side];
       const sx = rect.width / img.naturalWidth;
       const sy = rect.height / img.naturalHeight;
 
@@ -379,39 +428,68 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       };
 
       if (side === "left" || side === "right") {
-        const { temple, earTop } = TWO_BLOCK_LINE[side];
-        const a = points[temple];
-        const b = points[earTop];
-        if (!a || !b) return;
+        if (manual) {
+          const c0 = toCanvas(manual.p0);
+          const c1 = toCanvas(manual.p1);
+          ctx.setLineDash([12 * dpr, 8 * dpr]);
+          ctx.beginPath();
+          ctx.moveTo(c0.x, c0.y);
+          ctx.lineTo(c1.x, c1.y);
+          ctx.strokeStyle = "#FFFF00";
+          ctx.lineWidth = 5 * dpr;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.stroke();
+          ctx.setLineDash([]);
+          const r = 8 * dpr;
+          for (const c of [c0, c1]) {
+            ctx.beginPath();
+            ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+            ctx.fillStyle = "#FFFFFF";
+            ctx.fill();
+            ctx.strokeStyle = "#FFFF00";
+            ctx.lineWidth = 2.5 * dpr;
+            ctx.stroke();
+          }
+          return;
+        }
+        if (points && points.length > 0) {
+          const { temple, earTop } = TWO_BLOCK_LINE[side];
+          const a = points[temple];
+          const b = points[earTop];
+          if (!a || !b) return;
+          const p0 = toCanvas(a);
+          const p1 = toCanvas(b);
+          ctx.setLineDash([10 * dpr, 7 * dpr]);
+          ctx.beginPath();
+          ctx.moveTo(p0.x, p0.y);
+          ctx.lineTo(p1.x, p1.y);
+          ctx.strokeStyle = "#FFFF00";
+          ctx.lineWidth = 6 * dpr;
+          ctx.lineCap = "round";
+          ctx.stroke();
+          ctx.setLineDash([]);
+          const mx = (p0.x + p1.x) / 2;
+          const my = (p0.y + p1.y) / 2;
+          const label = "Two-Block Line";
+          const fontSize = 12 * dpr;
+          ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          const pad = 3 * dpr;
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = "rgba(0,0,0,0.6)";
+          ctx.fillRect(mx - tw / 2 - pad, my - fontSize / 2 - pad, tw + 2 * pad, fontSize + 2 * pad);
+          ctx.strokeStyle = "rgba(255,255,0,0.6)";
+          ctx.lineWidth = 1 * dpr;
+          ctx.strokeRect(mx - tw / 2 - pad, my - fontSize / 2 - pad, tw + 2 * pad, fontSize + 2 * pad);
+          ctx.fillStyle = "#fff";
+          ctx.fillText(label, mx, my);
+        }
+        return;
+      }
 
-        const p0 = toCanvas(a);
-        const p1 = toCanvas(b);
-        ctx.setLineDash([10 * dpr, 7 * dpr]);
-        ctx.beginPath();
-        ctx.moveTo(p0.x, p0.y);
-        ctx.lineTo(p1.x, p1.y);
-        ctx.strokeStyle = "#FFFF00";
-        ctx.lineWidth = 6 * dpr;
-        ctx.lineCap = "round";
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        const mx = (p0.x + p1.x) / 2;
-        const my = (p0.y + p1.y) / 2;
-        const label = "Two-Block Line";
-        const fontSize = 12 * dpr;
-        ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        const pad = 3 * dpr;
-        const tw = ctx.measureText(label).width;
-        ctx.fillStyle = "rgba(0,0,0,0.6)";
-        ctx.fillRect(mx - tw / 2 - pad, my - fontSize / 2 - pad, tw + 2 * pad, fontSize + 2 * pad);
-        ctx.strokeStyle = "rgba(255,255,0,0.6)";
-        ctx.lineWidth = 1 * dpr;
-        ctx.strokeRect(mx - tw / 2 - pad, my - fontSize / 2 - pad, tw + 2 * pad, fontSize + 2 * pad);
-        ctx.fillStyle = "#fff";
-        ctx.fillText(label, mx, my);
+      if (!points || points.length === 0) {
         return;
       }
 
@@ -445,7 +523,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         ctx.stroke();
       }
     },
-    [landmarksBySide],
+    [landmarksBySide, manualBlockBySide],
   );
 
   const analyzeAndDraw = useCallback(
@@ -454,15 +532,33 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
       if (!img) return;
 
       setErrorMsg((prev) => ({ ...prev, [side]: null }));
+      setManualBlockBySide((prev) => ({ ...prev, [side]: null }));
       setIsAnalyzing((prev) => ({ ...prev, [side]: true }));
       setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+
+      const activateSideManual = () => {
+        const nw = img.naturalWidth;
+        const nh = img.naturalHeight;
+        if (nw < 2 || nh < 2) return;
+        if (side !== "left" && side !== "right") return;
+        setErrorMsg((prev) => ({ ...prev, [side]: null }));
+        setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+        setManualBlockBySide((prev) => ({
+          ...prev,
+          [side]: defaultManualBlockLine(nw, nh),
+        }));
+      };
 
       try {
         const points = await analyzeFace(img);
 
         if (points.length === 0) {
-          setErrorMsg((prev) => ({ ...prev, [side]: ANALYSIS_ERROR_MSG }));
-          setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+          if (side === "left" || side === "right") {
+            activateSideManual();
+          } else {
+            setErrorMsg((prev) => ({ ...prev, [side]: ANALYSIS_ERROR_MSG }));
+            setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+          }
           return;
         }
 
@@ -478,18 +574,22 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         if (side === "left" || side === "right") {
           const { temple, earTop } = TWO_BLOCK_LINE[side];
           if (!points[temple] || !points[earTop]) {
-            setErrorMsg((prev) => ({ ...prev, [side]: ANALYSIS_ERROR_MSG }));
-            setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+            activateSideManual();
             return;
           }
         }
 
         setErrorMsg((prev) => ({ ...prev, [side]: null }));
+        setManualBlockBySide((prev) => ({ ...prev, [side]: null }));
         setLandmarksBySide((prev) => ({ ...prev, [side]: points }));
         requestAnimationFrame(() => drawLandmarks(side));
       } catch {
-        setErrorMsg((prev) => ({ ...prev, [side]: ANALYSIS_ERROR_MSG }));
-        setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+        if (side === "left" || side === "right") {
+          activateSideManual();
+        } else {
+          setErrorMsg((prev) => ({ ...prev, [side]: ANALYSIS_ERROR_MSG }));
+          setLandmarksBySide((prev) => ({ ...prev, [side]: null }));
+        }
       } finally {
         setIsAnalyzing((prev) => ({ ...prev, [side]: false }));
       }
@@ -501,7 +601,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     for (const s of SIDE_ORDER) {
       requestAnimationFrame(() => drawLandmarks(s));
     }
-  }, [drawLandmarks, landmarksBySide]);
+  }, [drawLandmarks, landmarksBySide, manualBlockBySide]);
 
   useEffect(() => {
     const onResize = () => {
@@ -509,17 +609,110 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [drawLandmarks, landmarksBySide]);
+  }, [drawLandmarks, landmarksBySide, manualBlockBySide]);
+
+  const isSlotReadyForGuide = useCallback(
+    (s: FaceSide) => {
+      if (photos[s] === null) return false;
+      if (isAnalyzing[s]) return false;
+      if (errorMsg[s] !== null) return false;
+      if (s === "left" || s === "right") {
+        if (manualBlockBySide[s] != null) return true;
+        const lm = landmarksBySide[s];
+        return lm != null && lm.length > 0;
+      }
+      const lm = landmarksBySide[s];
+      return lm != null && lm.length > 0;
+    },
+    [errorMsg, isAnalyzing, landmarksBySide, manualBlockBySide, photos],
+  );
 
   const allUploaded = SIDE_ORDER.every((s) => photos[s] !== null);
   const allOk =
     allUploaded &&
     SIDE_ORDER.every((s) => !isAnalyzing[s]) &&
-    SIDE_ORDER.every((s) => errorMsg[s] === null) &&
-    SIDE_ORDER.every(
-      (s) => photos[s] === null || (landmarksBySide[s] != null && landmarksBySide[s]!.length > 0),
-    );
+    SIDE_ORDER.every((s) => isSlotReadyForGuide(s));
   const canStartGuide = allOk;
+
+  const clientToNatural = useCallback(
+    (img: HTMLImageElement, clientX: number, clientY: number): FacePixelPoint => {
+      const r = img.getBoundingClientRect();
+      const nw = img.naturalWidth;
+      const nh = img.naturalHeight;
+      let x = ((clientX - r.left) / r.width) * nw;
+      let y = ((clientY - r.top) / r.height) * nh;
+      x = Math.max(0, Math.min(nw, x));
+      y = Math.max(0, Math.min(nh, y));
+      return { x, y };
+    },
+    [],
+  );
+
+  const onBlockPointerDown = useCallback(
+    (side: "left" | "right", e: ReactPointerEvent<HTMLCanvasElement>) => {
+      const manual = manualBlockBySide[side];
+      if (!manual) return;
+      const img = imgRefs.current[side];
+      if (!img) return;
+      e.preventDefault();
+      const c0c = (() => {
+        const r = img.getBoundingClientRect();
+        const { p0, p1 } = manual;
+        const sx = r.width / img.naturalWidth;
+        const sy = r.height / img.naturalHeight;
+        return {
+          c0: { x: r.left + p0.x * sx, y: r.top + p0.y * sy },
+          c1: { x: r.left + p1.x * sx, y: r.top + p1.y * sy },
+        };
+      })();
+      const d0 =
+        (e.clientX - c0c.c0.x) * (e.clientX - c0c.c0.x) +
+        (e.clientY - c0c.c0.y) * (e.clientY - c0c.c0.y);
+      const d1 =
+        (e.clientX - c0c.c1.x) * (e.clientX - c0c.c1.x) +
+        (e.clientY - c0c.c1.y) * (e.clientY - c0c.c1.y);
+      const hitR = 14;
+      const hit2 = hitR * hitR;
+      const h0 = d0 <= hit2;
+      const h1 = d1 <= hit2;
+      if (!h0 && !h1) return;
+      const dragTarget: 0 | 1 =
+        h0 && h1 ? (d0 < d1 ? 0 : 1) : h0 ? 0 : 1;
+      blockDragRef.current = { side, which: dragTarget, pointerId: e.pointerId };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const onMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== e.pointerId) return;
+        const img2 = imgRefs.current[side];
+        if (!img2) return;
+        const np = clientToNatural(img2, ev.clientX, ev.clientY);
+        setManualBlockBySide((prev) => {
+          const m = prev[side];
+          if (!m) return prev;
+          if (dragTarget === 0) {
+            return { ...prev, [side]: { ...m, p0: np } };
+          }
+          return { ...prev, [side]: { ...m, p1: np } };
+        });
+        requestAnimationFrame(() => drawLandmarks(side));
+      };
+      const onUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== e.pointerId) return;
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        document.removeEventListener("pointercancel", onUp);
+        blockDragRef.current = null;
+        try {
+          (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+      };
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+      document.addEventListener("pointercancel", onUp);
+    },
+    [clientToNatural, drawLandmarks, manualBlockBySide],
+  );
 
   return (
     <div className={className}>
@@ -568,6 +761,8 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
               const label = SIDE_LABELS[side];
               const err = errorMsg[side];
               const loading = isAnalyzing[side];
+              const isManualBlock =
+                (side === "left" || side === "right") && manualBlockBySide[side] != null;
 
               return (
                 <div key={side} className="relative aspect-square min-h-0">
@@ -596,10 +791,23 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                         ref={(el) => {
                           canvasRefs.current[side] = el;
                         }}
-                        className="pointer-events-none absolute inset-0 h-full w-full"
+                        className={
+                          isManualBlock
+                            ? "absolute inset-0 z-[15] h-full w-full cursor-grab touch-none active:cursor-grabbing"
+                            : "pointer-events-none absolute inset-0 h-full w-full"
+                        }
                         aria-hidden
+                        onPointerDown={
+                          (side === "left" || side === "right") && isManualBlock
+                            ? (e) => {
+                                if (side === "left" || side === "right") {
+                                  onBlockPointerDown(side, e);
+                                }
+                              }
+                            : undefined
+                        }
                       />
-                      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/35 via-transparent to-black/20" />
+                      <div className="pointer-events-none absolute inset-0 z-[5] bg-gradient-to-t from-black/35 via-transparent to-black/20" />
 
                       {loading ? (
                         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center">
@@ -607,6 +815,14 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                             <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
                             <span>🤖 Analyzing shape...</span>
                           </div>
+                        </div>
+                      ) : null}
+
+                      {!loading && isManualBlock ? (
+                        <div className="pointer-events-none absolute inset-x-0 bottom-14 z-[14] flex justify-center px-2">
+                          <p className="max-w-[18rem] rounded-lg bg-black/60 px-3 py-2 text-center text-xs font-medium leading-snug text-white ring-1 ring-white/10">
+                            {MANUAL_MODE_HINT}
+                          </p>
                         </div>
                       ) : null}
 

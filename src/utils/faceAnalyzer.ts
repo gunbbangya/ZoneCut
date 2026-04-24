@@ -21,6 +21,9 @@ async function getFaceLandmarker(): Promise<FaceLandmarker> {
         },
         runningMode: "IMAGE",
         numFaces: 1,
+        minFaceDetectionConfidence: 0.35,
+        minFacePresenceConfidence: 0.35,
+        minTrackingConfidence: 0.35,
         outputFaceBlendshapes: false,
         outputFacialTransformationMatrixes: false,
       });
@@ -45,11 +48,12 @@ export async function analyzeFace(
   if (!imageElement.complete || imageElement.naturalWidth === 0) {
     await new Promise<void>((resolve, reject) => {
       const onLoad = () => resolve();
-      const onError = () => reject(new Error("이미지를 로드할 수 없습니다."));
+      const onError = () => reject(new Error("Could not load image."));
       imageElement.addEventListener("load", onLoad, { once: true });
       imageElement.addEventListener("error", onError, { once: true });
     });
   }
+
 
   const landmarker = await getFaceLandmarker();
   const result = landmarker.detect(imageElement);
