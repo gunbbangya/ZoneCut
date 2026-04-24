@@ -43,8 +43,11 @@ const FRONT_BACK_OVAL_INDICES: readonly number[] = [
 const MANUAL_MODE_HINT_SIDE =
   "Drag the dots to match your ear top and eyebrow end";
 
-const MANUAL_MODE_HINT_FRONT_BACK =
-  "Drag the dots to set the maximum clipping height";
+const MANUAL_MODE_HINT_BACK =
+  "Drag the line to set how high to clip the back (usually below the protruding bone)";
+
+const MANUAL_MODE_HINT_FRONT =
+  "Drag the line to set the side block height (around temple level)";
 
 type StyleChoice = "twoBlockFade" | null;
 
@@ -78,6 +81,151 @@ const TWO_BLOCK_LINE: Record<"left" | "right", { temple: number; earTop: number 
   right: { temple: 300, earTop: 361 },
 };
 
+type ViewMode = "upload" | "guide";
+type GuideStepId = 1 | 2 | 3 | 4;
+
+const GUIDE_STEPS: readonly {
+  id: GuideStepId;
+  text: string;
+  sides: readonly FaceSide[];
+}[] = [
+  {
+    id: 1,
+    text: "Step 1: Sectioning. Use hair clips to tightly tie up all hair ABOVE the yellow line.",
+    sides: ["front"],
+  },
+  {
+    id: 2,
+    text: "Step 2: Side Cut. Put on a 12mm guard. Shave straight UP to the yellow line. Do not curve into the head.",
+    sides: ["left", "right"],
+  },
+  {
+    id: 3,
+    text: "Step 3: Back Cut. Use the 12mm guard. Shave up to the yellow line to create back volume.",
+    sides: ["back"],
+  },
+  {
+    id: 4,
+    text: "Step 4: Top & Cleanup. Remove the guard for edges. Cut the top hair by pointing scissors vertically at the ends.",
+    sides: ["front"],
+  },
+];
+
+/** Read-only view: same geometry as the upload canvas, but no handle dots or L/R “Two-Block” label. */
+function paintGuideOverlayOnCanvas(
+  img: HTMLImageElement,
+  canvas: HTMLCanvasElement,
+  side: FaceSide,
+  points: FacePixelPoint[] | null,
+  manual: ManualBlockLine | null,
+) {
+  if (typeof window === "undefined") return;
+  if (img.naturalWidth < 1) return;
+  const rect = img.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return;
+
+  const dpr = window.devicePixelRatio ?? 1;
+  const targetWidth = Math.max(1, Math.round(rect.width * dpr));
+  const targetHeight = Math.max(1, Math.round(rect.height * dpr));
+
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const sx = rect.width / img.naturalWidth;
+  const sy = rect.height / img.naturalHeight;
+  const toCanvas = (p: FacePixelPoint) => {
+    return { x: p.x * sx * dpr, y: p.y * sy * dpr };
+  };
+
+  if (manual) {
+    const p0N = manual.p0;
+    const p1N = manual.p1;
+    let drawP0: FacePixelPoint;
+    let drawP1: FacePixelPoint;
+    if (isFrontOrBackSide(side)) {
+      const y = (p0N.y + p1N.y) / 2;
+      drawP0 = { x: p0N.x, y };
+      drawP1 = { x: p1N.x, y };
+    } else {
+      drawP0 = p0N;
+      drawP1 = p1N;
+    }
+    const c0 = toCanvas(drawP0);
+    const c1 = toCanvas(drawP1);
+    ctx.setLineDash([12 * dpr, 8 * dpr]);
+    ctx.beginPath();
+    ctx.moveTo(c0.x, c0.y);
+    ctx.lineTo(c1.x, c1.y);
+    ctx.strokeStyle = "#FFFF00";
+    ctx.lineWidth = 5 * dpr;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+    ctx.setLineDash([]);
+    return;
+  }
+
+  if (side === "left" || side === "right") {
+    if (points && points.length > 0) {
+      const { temple, earTop } = TWO_BLOCK_LINE[side];
+      const a = points[temple];
+      const b = points[earTop];
+      if (a && b) {
+        const p0 = toCanvas(a);
+        const p1 = toCanvas(b);
+        ctx.setLineDash([10 * dpr, 7 * dpr]);
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y);
+        ctx.lineTo(p1.x, p1.y);
+        ctx.strokeStyle = "#FFFF00";
+        ctx.lineWidth = 6 * dpr;
+        ctx.lineCap = "round";
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    return;
+  }
+
+  if (!points || points.length === 0) {
+    return;
+  }
+
+  if (side === "front" || side === "back") {
+    const firstIdx = FRONT_BACK_OVAL_INDICES.find((i) => points[i] != null);
+    if (firstIdx === undefined) return;
+
+    const first = points[firstIdx]!;
+    ctx.beginPath();
+    const pStart = toCanvas(first);
+    ctx.moveTo(pStart.x, pStart.y);
+
+    let count = 1;
+    for (const i of FRONT_BACK_OVAL_INDICES) {
+      if (i === firstIdx) continue;
+      const p = points[i];
+      if (!p) continue;
+      const t = toCanvas(p);
+      ctx.lineTo(t.x, t.y);
+      count += 1;
+    }
+    if (count < 3) return;
+    ctx.closePath();
+
+    ctx.fillStyle = "rgba(0, 255, 255, 0.1)";
+    ctx.fill();
+    ctx.strokeStyle = "#00FFFF";
+    ctx.lineWidth = 6 * dpr;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.stroke();
+  }
+}
+
 export type PhotoUploadProps = {
   onPhotosChange?: (photos: PhotoSlotState) => void;
   className?: string;
@@ -101,7 +249,7 @@ const CAMERA_HEADLINE_BACK =
   "Position the back of your head inside the frame.";
 
 const CAMERA_HEADLINE_SIDE =
-  "Turn your head slightly (45 degrees) so your nose tip and one ear are clearly visible.";
+  "Turn your head 90 degrees. Align your ear with the center line.";
 
 function cameraHeadlineForSide(side: FaceSide): string {
   if (side === "back") return CAMERA_HEADLINE_BACK;
@@ -189,6 +337,9 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     Record<FaceSide, ManualBlockLine | null>
   >({ front: null, back: null, left: null, right: null });
 
+  const [viewMode, setViewMode] = useState<ViewMode>("upload");
+  const [currentGuideStep, setCurrentGuideStep] = useState<GuideStepId>(1);
+
   const [cameraSide, setCameraSide] = useState<FaceSide | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [videoReady, setVideoReady] = useState(false);
@@ -212,6 +363,19 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     left: null,
     right: null,
   });
+  const guideImageRefs = useRef<Record<FaceSide, HTMLImageElement | null>>({
+    front: null,
+    back: null,
+    left: null,
+    right: null,
+  });
+  const guideCanvasRefs = useRef<Record<FaceSide, HTMLCanvasElement | null>>({
+    front: null,
+    back: null,
+    left: null,
+    right: null,
+  });
+  const guideViewRootRef = useRef<HTMLDivElement | null>(null);
   const blockDragRef = useRef<{
     side: FaceSide;
     which: 0 | 1;
@@ -760,6 +924,57 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
     SIDE_ORDER.every((s) => isSlotReadyForGuide(s));
   const canStartGuide = allOk;
 
+  const redrawGuideOverlays = useCallback(() => {
+    if (viewMode !== "guide") return;
+    const step = GUIDE_STEPS[currentGuideStep - 1];
+    if (!step) return;
+    for (const side of step.sides) {
+      const img = guideImageRefs.current[side];
+      const canvas = guideCanvasRefs.current[side];
+      if (!img || !canvas) continue;
+      paintGuideOverlayOnCanvas(
+        img,
+        canvas,
+        side,
+        landmarksBySide[side],
+        manualBlockBySide[side],
+      );
+    }
+  }, [
+    viewMode,
+    currentGuideStep,
+    landmarksBySide,
+    manualBlockBySide,
+  ]);
+
+  useLayoutEffect(() => {
+    if (viewMode !== "guide") return;
+    const id = requestAnimationFrame(() => redrawGuideOverlays());
+    return () => cancelAnimationFrame(id);
+  }, [viewMode, currentGuideStep, photos, landmarksBySide, manualBlockBySide, redrawGuideOverlays]);
+
+  useLayoutEffect(() => {
+    if (viewMode !== "guide" || typeof ResizeObserver === "undefined") return;
+    const el = guideViewRootRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => redrawGuideOverlays());
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [viewMode, currentGuideStep, redrawGuideOverlays]);
+
+  const startStepByStepGuide = useCallback(() => {
+    if (!allOk) return;
+    setCurrentGuideStep(1);
+    setViewMode("guide");
+  }, [allOk]);
+
+  const finishStepByStepGuide = useCallback(() => {
+    setViewMode("upload");
+    setCurrentGuideStep(1);
+  }, []);
+
   const clientToNatural = useCallback(
     (img: HTMLImageElement, clientX: number, clientY: number): FacePixelPoint => {
       const r = img.getBoundingClientRect();
@@ -1049,6 +1264,8 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         </div>
       ) : (
         <div className="space-y-6">
+          {viewMode === "upload" ? (
+            <>
           <div className="flex items-start gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3.5 backdrop-blur-md">
             <span className="text-lg">💧</span>
             <p className="text-sm leading-relaxed text-zinc-300">
@@ -1065,9 +1282,12 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
               const err = errorMsg[side];
               const loading = isAnalyzing[side];
               const isManualBlock = manualBlockBySide[side] != null;
-              const manualHint = isFrontOrBackSide(side)
-                ? MANUAL_MODE_HINT_FRONT_BACK
-                : MANUAL_MODE_HINT_SIDE;
+              const manualHint =
+                side === "front"
+                  ? MANUAL_MODE_HINT_FRONT
+                  : side === "back"
+                    ? MANUAL_MODE_HINT_BACK
+                    : MANUAL_MODE_HINT_SIDE;
 
               return (
                 <div key={side} className="relative aspect-square min-h-0">
@@ -1173,15 +1393,105 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
             <div className="pt-1">
               <button
                 type="button"
-                onClick={() => {
-                  console.log("Start Step-by-Step Guide");
-                }}
+                onClick={startStepByStepGuide}
                 className="w-full rounded-2xl bg-white px-5 py-4 text-center text-sm font-extrabold text-zinc-950 shadow-sm ring-1 ring-black/10 transition hover:bg-zinc-100 active:scale-[0.99]"
               >
                 Start Step-by-Step Guide
               </button>
             </div>
           ) : null}
+            </>
+          ) : (
+            <div ref={guideViewRootRef} className="space-y-5">
+              <p className="text-center text-sm font-medium text-zinc-500">
+                Step {currentGuideStep} of 4
+              </p>
+              {(() => {
+                const config = GUIDE_STEPS[currentGuideStep - 1]!;
+                return (
+                  <>
+                    <div
+                      className={
+                        config.sides.length > 1
+                          ? "grid grid-cols-1 gap-4 sm:grid-cols-2"
+                          : "mx-auto w-full max-w-md"
+                      }
+                    >
+                      {config.sides.map((side) => (
+                        <div
+                          key={`${config.id}-${side}`}
+                          className="overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900"
+                        >
+                          <div className="relative aspect-[3/4] w-full min-h-0">
+                            {/* eslint-disable-next-line @next/next/no-img-element -- data URL from capture */}
+                            <img
+                              ref={(el) => {
+                                guideImageRefs.current[side] = el;
+                              }}
+                              src={photos[side]!}
+                              alt={SIDE_LABELS[side]}
+                              className="h-full w-full object-cover"
+                              onLoad={() =>
+                                requestAnimationFrame(() => redrawGuideOverlays())
+                              }
+                            />
+                            <canvas
+                              ref={(el) => {
+                                guideCanvasRefs.current[side] = el;
+                              }}
+                              className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+                              aria-hidden
+                            />
+                          </div>
+                          {config.sides.length > 1 ? (
+                            <p className="px-2 py-1.5 text-center text-xs font-medium text-zinc-400">
+                              {SIDE_LABELS[side]}
+                            </p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                    <p className="px-1 text-center text-sm leading-relaxed text-zinc-200">
+                      {config.text}
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-3 border-t border-zinc-800 pt-4">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCurrentGuideStep((s) => (s > 1 ? ((s - 1) as GuideStepId) : 1))
+                        }
+                        disabled={currentGuideStep === 1}
+                        className="rounded-xl border border-zinc-600 bg-zinc-800/80 px-5 py-2.5 text-sm font-semibold text-zinc-200 transition enabled:hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Prev
+                      </button>
+                      {currentGuideStep < 4 ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCurrentGuideStep((s) =>
+                              s < 4 ? ((s + 1) as GuideStepId) : 4,
+                            )
+                          }
+                          className="rounded-xl bg-white px-6 py-2.5 text-sm font-extrabold text-zinc-950 shadow-sm ring-1 ring-black/10 transition hover:bg-zinc-100"
+                        >
+                          Next
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={finishStepByStepGuide}
+                          className="rounded-xl bg-white px-6 py-2.5 text-sm font-extrabold text-zinc-950 shadow-sm ring-1 ring-black/10 transition hover:bg-zinc-100"
+                        >
+                          Finish
+                        </button>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
         </div>
       )}
 
