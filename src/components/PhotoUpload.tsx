@@ -82,32 +82,50 @@ const TWO_BLOCK_LINE: Record<"left" | "right", { temple: number; earTop: number 
 };
 
 type ViewMode = "upload" | "guide";
-type GuideStepId = 1 | 2 | 3 | 4;
+type GuideStepId = 1 | 2 | 3 | 4 | 5 | 6;
+type GuideStepAnim = "clipper" | "scissors" | null;
 
 const GUIDE_STEPS: readonly {
   id: GuideStepId;
   text: string;
   sides: readonly FaceSide[];
+  anim: GuideStepAnim;
 }[] = [
   {
     id: 1,
-    text: "Step 1: Sectioning. Use hair clips to tightly tie up all hair ABOVE the yellow line.",
+    text: "Step 1: Sectioning. Blocking: tie or clip all hair ABOVE the yellow line, then work on the rest.",
     sides: ["front"],
+    anim: null,
   },
   {
     id: 2,
-    text: "Step 2: Side Cut. Put on a 12mm guard. Shave straight UP to the yellow line. Do not curve into the head.",
+    text: "Step 2: Side Base. 12mm guard. Shave straight UP in one line to the yellow line—no curving into the head.",
     sides: ["left", "right"],
+    anim: "clipper",
   },
   {
     id: 3,
-    text: "Step 3: Back Cut. Use the 12mm guard. Shave up to the yellow line to create back volume.",
+    text: "Step 3: Back Base. 12mm guard. Shave up to the yellow line, below the protruding (occipital) bone.",
     sides: ["back"],
+    anim: "clipper",
   },
   {
     id: 4,
-    text: "Step 4: Top & Cleanup. Remove the guard for edges. Cut the top hair by pointing scissors vertically at the ends.",
+    text: "Step 4: Top Length. Set length on top—do not make one blunt horizontal line across the head.",
     sides: ["front"],
+    anim: null,
+  },
+  {
+    id: 5,
+    text: "Step 5: Point Cut. Front/top texture: keep scissors vertical and snip the ends in a point-cutting motion.",
+    sides: ["front"],
+    anim: "scissors",
+  },
+  {
+    id: 6,
+    text: "Step 6: Cleanup. 0mm (no guard) to line up the edge and clear leftover fuzz around the hairline.",
+    sides: ["back"],
+    anim: null,
   },
 ];
 
@@ -288,6 +306,71 @@ function CloseIcon({ className }: { className?: string }) {
     >
       <path d="M18 6L6 18M6 6l12 12" />
     </svg>
+  );
+}
+
+function GuideScissorsIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="7" cy="7" r="2.5" />
+      <circle cx="7" cy="17" r="2.5" />
+      <path d="M10 9l5 6M15 9l-5 6" />
+    </svg>
+  );
+}
+
+function GuideStepAnimationOverlay({
+  anim,
+  mirrorClipper = false,
+}: {
+  anim: GuideStepAnim;
+  /** Left profile: flip clipper so the exit sweeps toward the outside (ear) side. */
+  mirrorClipper?: boolean;
+}) {
+  if (anim === null) return null;
+  if (anim === "clipper") {
+    return (
+      <div
+        className="pointer-events-none absolute inset-0 z-20 overflow-hidden"
+        aria-hidden
+      >
+        <div className="absolute inset-0 bg-black/30" />
+        <div
+          className={
+            mirrorClipper
+              ? "absolute inset-0 origin-center scale-x-[-1] pointer-events-none"
+              : "absolute inset-0 pointer-events-none"
+          }
+        >
+          <div
+            className="animate-guide-clipper pointer-events-none absolute h-[4.5rem] w-10 sm:h-[5rem] sm:w-11"
+            style={{ willChange: "top, left, transform" }}
+          >
+            <div className="h-[78%] w-full rounded-md border-2 border-white/90 bg-zinc-800/90 shadow-md" />
+            <div className="mx-auto mt-0.5 h-2.5 w-7 rounded-b-md bg-zinc-500/90" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="pointer-events-none absolute inset-0 z-20" aria-hidden>
+      <div className="absolute inset-0 bg-black/30" />
+      <div className="absolute left-1/2 top-[32%] flex -translate-x-1/2 items-center justify-center sm:top-[30%]">
+        <div className="drop-shadow-lg">
+          <GuideScissorsIcon className="animate-guide-scissors h-16 w-16 text-amber-100 sm:h-20 sm:w-20" />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1266,14 +1349,9 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
         <div className="space-y-6">
           {viewMode === "upload" ? (
             <>
-          <div className="flex items-start gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3.5 backdrop-blur-md">
-            <span className="text-lg">💧</span>
-            <p className="text-sm leading-relaxed text-zinc-300">
-              <strong className="font-semibold text-white">Accuracy Tip: </strong>
-              Wet your hair with a spray bottle and tie it tightly with a hair tie. This
-              helps the AI identify your head shape precisely.
-            </p>
-          </div>
+          <p className="text-center text-sm leading-relaxed text-zinc-300">
+            가이드 선에 맞춰 사진을 찍어주세요
+          </p>
 
           <div className="grid grid-cols-2 gap-3 sm:gap-4">
             {SIDE_ORDER.map((side) => {
@@ -1404,7 +1482,7 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
           ) : (
             <div ref={guideViewRootRef} className="space-y-5">
               <p className="text-center text-sm font-medium text-zinc-500">
-                Step {currentGuideStep} of 4
+                Step {currentGuideStep} of 6
               </p>
               {(() => {
                 const config = GUIDE_STEPS[currentGuideStep - 1]!;
@@ -1430,16 +1508,20 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                               }}
                               src={photos[side]!}
                               alt={SIDE_LABELS[side]}
-                              className="h-full w-full object-cover"
+                              className="relative z-0 h-full w-full object-cover"
                               onLoad={() =>
                                 requestAnimationFrame(() => redrawGuideOverlays())
                               }
+                            />
+                            <GuideStepAnimationOverlay
+                              anim={config.anim}
+                              mirrorClipper={config.anim === "clipper" && side === "left"}
                             />
                             <canvas
                               ref={(el) => {
                                 guideCanvasRefs.current[side] = el;
                               }}
-                              className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+                              className="pointer-events-none absolute inset-0 z-[30] h-full w-full"
                               aria-hidden
                             />
                           </div>
@@ -1465,12 +1547,12 @@ export function PhotoUpload({ onPhotosChange, className }: PhotoUploadProps) {
                       >
                         Prev
                       </button>
-                      {currentGuideStep < 4 ? (
+                      {currentGuideStep < 6 ? (
                         <button
                           type="button"
                           onClick={() =>
                             setCurrentGuideStep((s) =>
-                              s < 4 ? ((s + 1) as GuideStepId) : 4,
+                              s < 6 ? ((s + 1) as GuideStepId) : 6,
                             )
                           }
                           className="rounded-xl bg-white px-6 py-2.5 text-sm font-extrabold text-zinc-950 shadow-sm ring-1 ring-black/10 transition hover:bg-zinc-100"
